@@ -178,7 +178,7 @@ def _estimate_per_call(
     """Rough per-call seconds from a short probe, used to size counts.
 
     Times *reps* back-to-back calls in a single window.  The caller is expected
-    to have primed *fn* already (see the prime pass in :func:`do_bench_many`),
+    to have pre-warmed *fn* already (see the pre-warmup pass in :func:`do_bench_many`),
     so this need only be good enough to convert a time budget or
     ``target_window_s`` into a call count.
     """
@@ -228,8 +228,8 @@ def do_bench(
 ) -> Measurement:
     """Time a single callable, returning a :class:`Measurement`.
 
-    A first *prime* call is always discarded (absorbing one-shot costs like JIT
-    compilation or lazy init); then ``warmup`` untimed calls precede ``iters``
+    A first *pre-warmup* call is always discarded (absorbing one-shot costs like JIT
+    compilation, algorithm selection, or lazy init); then ``warmup`` untimed calls precede ``iters``
     timed samples.  ``inner`` is the number of back-to-back calls per timed
     sample - raise it, or pass ``"auto"`` (fills ``target_window_s``), for
     kernels faster than the timer's resolution.  ``min_warmup_time`` /
@@ -294,7 +294,7 @@ def do_bench_many(
     clocks or neighboring load then lands on one sample of *each* benchmark
     rather than corrupting a single benchmark's contiguous block.
 
-    A first *prime* call per callable is always discarded (JIT / lazy init).
+    A first *pre-warmup* call per callable is always discarded (JIT / lazy init).
     ``warmup`` / ``iters`` are per-callable count floors.  Set
     ``min_warmup_time`` / ``min_iters_time`` (seconds) to instead run each
     callable until that much kernel time elapses; the count is derived per
@@ -319,7 +319,7 @@ def do_bench_many(
         scratch = _make_scratch(flush_mb) if cache_flush else None
         before = (lambda: scratch.zero_()) if scratch is not None else None
 
-        # Prime: discard one (possibly compiling or lazily-initialized) first
+        # Pre-warmup: discard one (possibly compiling or lazily-initialized) first
         # call per callable before estimating, warming, or timing anything.
         for nm in names:
             fns[nm]()

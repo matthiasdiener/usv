@@ -1,11 +1,11 @@
 # usv - Unladen Swallow Velocity
 
 GPU micro-benchmarking for AMD and NVIDIA, in the spirit of
-[`asv`](https://github.com/airspeed-velocity/asv) but geared for GPU kernels.
+[`asv`](https://github.com/airspeed-velocity/asv) /
+[`torch.utils.benchmark`](https://docs.pytorch.org/docs/stable/benchmark_utils.html) /
+[`triton.testing.do_bench`](https://triton-lang.org/main/python-api/generated/triton.testing.do_bench.html).
 
-`usv` follows the familiar `triton.testing.do_bench` / `torch.utils.benchmark`
-style - time a plain callable - and adds optional accuracy features that matter
-for GPU micro-benchmarks:
+Optional accuracy features:
 
 - **Interleaved scheduling** - time a *group* of callables together and collect
   samples round-robin, so time-correlated noise (thermal ramp, DVFS,
@@ -79,7 +79,7 @@ def make_matmul(N, nbuf=8):
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `fn` | - | Callable of no args to time. |
-| `warmup` | `50` | Untimed calls before timing (a first prime call is always discarded). |
+| `warmup` | `50` | Untimed calls before timing (a first pre-warmup call is always discarded). |
 | `iters` | `100` | Number of timed samples. |
 | `inner` | `1` | Calls per timed sample, or `"auto"` to fill `target_window_s`. |
 | `target_window_s` | `1e-3` | Target window duration for `inner="auto"`. |

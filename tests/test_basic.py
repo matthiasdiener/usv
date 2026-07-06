@@ -77,7 +77,7 @@ def test_do_bench_many_visits_round_robin():
         "b": lambda: order.append("b"),
     }
     do_bench_many(fns, warmup=0, iters=3, interleave=True, timer="wall")
-    # drop the prime pass (one discarded call per callable) before checking
+    # drop the pre-warmup pass (one discarded call per callable) before checking
     timed = order[len(fns) :]
     assert len(timed) == 6
     assert timed.count("a") == 3 and timed.count("b") == 3
@@ -105,14 +105,14 @@ def test_min_iters_time_per_fn_dropout():
     assert res["fast"].n > res["slow"].n
 
 
-def test_prime_call_discarded():
+def test_pre_warmup_call_discarded():
     calls = {"n": 0}
 
     def fn():
         calls["n"] += 1
 
     m = do_bench(fn, warmup=0, iters=3, inner=1, timer="wall")
-    # one prime call (discarded) plus three timed samples
+    # one pre-warmup call (discarded) plus three timed samples
     assert calls["n"] == 4
     assert m.n == 3
 
