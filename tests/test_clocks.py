@@ -23,6 +23,13 @@ def test_fixed_clocks_requires_detected_vendor(monkeypatch):
             pass
 
 
+def test_fixed_clocks_rejects_nvidia(monkeypatch):
+    monkeypatch.setattr(clocks, "gpu_vendor", lambda: "nvidia")
+    with pytest.raises(RuntimeError, match="NVIDIA clock control is not supported"):
+        with fixed_clocks():
+            pass
+
+
 def test_amd_fixed_clocks_uses_perf_level_high(monkeypatch):
     monkeypatch.setattr(clocks, "gpu_vendor", lambda: "amd")
     monkeypatch.setattr(
@@ -50,7 +57,7 @@ def test_lock_clocks_true_requests_device_max(monkeypatch):
     seen: list = []
     monkeypatch.setattr(bench, "fixed_clocks", _record_fixed_clocks(seen))
     do_bench(lambda: None, warmup=0, iters=1, timer="wall", lock_clocks=True)
-    assert seen == [(None, None)]  # None -> device max
+    assert seen == [(None, None)]
 
 
 def test_lock_clocks_none_does_not_lock(monkeypatch):

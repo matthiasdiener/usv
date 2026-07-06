@@ -1,4 +1,4 @@
-"""Opt-in GPU clock locking for reproducible absolute timings.
+"""Opt-in AMD GPU clock locking for reproducible absolute timings.
 
 DVFS / boost / thermal throttling make the GPU's clock the dominant source of
 run-to-run variance.  Locking it to a fixed frequency removes that, at the cost
@@ -7,8 +7,6 @@ and mutating *global* device state.  This is therefore never done automatically
 - wrap a benchmark in :func:`fixed_clocks` explicitly.  Clocks are restored on
 exit.
 
-* NVIDIA: locks SM + memory clocks to the device max
-  (``nvidia-smi --lock-gpu-clocks`` / ``--lock-memory-clocks``).
 * AMD: forces the maximum via performance level HIGH
   (``amd-smi set --perf-level HIGH``).
 """
@@ -62,56 +60,7 @@ def _run_ok(cmd: list[str]) -> None:
         pass
 
 
-# -- NVIDIA ---------------------------------------------------------------
-
-
-def _nvidia_max_clocks(device: int) -> tuple[int, int]:
-    out = _run(
-        [
-            "nvidia-smi",
-            "-i",
-            str(device),
-            "--query-gpu=clocks.max.sm,clocks.max.memory",
-            "--format=csv,noheader,nounits",
-        ]
-    )
-    sm, mem = (int(x) for x in out.split(","))
-    return sm, mem
-
-
-def _nvidia_persistence(device: int) -> str | None:
-    try:
-        return _run(
-            [
-                "nvidia-smi",
-                "-i",
-                str(device),
-                "--query-gpu=persistence_mode",
-                "--format=csv,noheader",
-            ]
-        ).strip()
-    except Exception:
-        return None
-
-
-@contextmanager
-def _nvidia_fixed(device: int) -> Iterator[None]:
-    sm, mem = _nvidia_max_clocks(device)
-    prev_pm = _nvidia_persistence(device)
-
-    _run_ok(["nvidia-smi", "-i", str(device), "-pm", "1"])
-    try:
-        _run(["nvidia-smi", "-i", str(device), f"--lock-gpu-clocks={sm},{sm}"])
-        _run(["nvidia-smi", "-i", str(device), f"--lock-memory-clocks={mem},{mem}"])
-        yield
-    finally:
-        _run_ok(["nvidia-smi", "-i", str(device), "-rgc"])
-        _run_ok(["nvidia-smi", "-i", str(device), "-rmc"])
-        if prev_pm == "Disabled":
-            _run_ok(["nvidia-smi", "-i", str(device), "-pm", "0"])
-
-
-# -- AMD ------------------------------------------------------------------
+# AMD
 
 
 @contextmanager
@@ -136,16 +85,16 @@ def _amd_fixed(device: int) -> Iterator[None]:
         _run_ok(reset_cmd)
 
 
-# -- public API -----------------------------------------------------------
+# public API
 
 
 @contextmanager
 def fixed_clocks(*, device: int = 0, vendor: str = "auto") -> Iterator[None]:
-    """Lock the GPU clock to the device maximum for the duration of the block.
+    """Pin supported GPU clocks for the duration of the block.
 
-    Removes DVFS / boost variance for reproducible absolute timings.  NVIDIA
-    locks SM + memory clocks to the device max; AMD forces performance level
-    HIGH.  Use *device* to pick a GPU and *vendor* to override auto-detection.
+    Removes DVFS / boost variance for reproducible absolute timings on AMD GPUs by
+    forcing performance level HIGH.  Use *device* to pick a GPU and *vendor* to
+    override auto-detection.
 
     Needs privileges - the vendor SMI tools usually require ``sudo`` - and
     changes global GPU state, so use it only around benchmarking.  Clocks are
@@ -159,14 +108,13 @@ def fixed_clocks(*, device: int = 0, vendor: str = "auto") -> Iterator[None]:
             m = do_bench(lambda: x @ x)
     """
     v = vendor if vendor != "auto" else gpu_vendor()
-    if v == "nvidia":
-        with _nvidia_fixed(device):
-            yield
-    elif v == "amd":
+    if v == "amd":
         with _amd_fixed(device):
             yield
+    elif v == "nvidia":
+        raise RuntimeError("fixed_clocks: NVIDIA clock control is not supported")
     else:
         raise RuntimeError(
-            "fixed_clocks: could not detect an NVIDIA or AMD GPU / SMI tool "
-            "(pass vendor='nvidia' or 'amd' explicitly)"
+            "fixed_clocks: could not detect an AMD GPU / SMI tool "
+            "(pass vendor='amd' explicitly)"
         )

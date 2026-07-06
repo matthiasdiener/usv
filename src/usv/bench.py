@@ -199,14 +199,14 @@ def _inner_for_window(
 
 
 def _clock_lock(lock_clocks: bool):
-    """Return a context manager that pins GPU clocks to the device max, or a no-op.
+    """Return a context manager that pins supported GPU clocks, or a no-op.
 
-    Use :func:`usv.fixed_clocks` directly for a specific SM / memory clock.
+    Use :func:`usv.fixed_clocks` directly for a specific device or vendor.
     """
     return fixed_clocks() if lock_clocks else nullcontext()
 
 
-# -- single-callable timing -----------------------------------------------
+# single-callable timing
 
 
 def do_bench(
@@ -238,9 +238,9 @@ def do_bench(
     kernel time elapses, so counts scale up for very short kernels.
     ``cache_flush`` zeroes a scratch buffer before each sample to measure
     cold-cache cost; ``flush_mb`` sets its size in MB and, when ``None``, is
-    taken from the device L2 cache.  ``lock_clocks=True`` pins the GPU clock to
-    the device max for the run; for a specific frequency, or to lock once across
-    many calls, use the :func:`usv.fixed_clocks` context manager instead.
+    taken from the device L2 cache.  ``lock_clocks=True`` pins supported GPU
+    clocks for the run; to lock once across many calls, use the
+    :func:`usv.fixed_clocks` context manager instead.
 
     This is a thin wrapper over :func:`do_bench_many` (a single-entry group
     with no interleaving), unwrapped to one :class:`Measurement`.
@@ -264,7 +264,7 @@ def do_bench(
     return measurement
 
 
-# -- interleaved multi-callable timing ------------------------------------
+# interleaved multi-callable timing
 
 
 def do_bench_many(
@@ -305,10 +305,9 @@ def do_bench_many(
     ``inner="auto"`` is resolved per callable.  Throughput columns come from
     the optional ``flops`` / ``bytes`` maps keyed by benchmark name.
 
-    ``lock_clocks=True`` pins the GPU clock to the device max around the whole
-    group (via :func:`usv.fixed_clocks`); for a specific frequency, or to lock
-    once across many separate calls, use the ``fixed_clocks`` context manager
-    directly.
+    ``lock_clocks=True`` pins supported GPU clocks around the whole group (via
+    :func:`usv.fixed_clocks`); to lock once across many separate calls, use the
+    ``fixed_clocks`` context manager directly.
     """
     with _clock_lock(lock_clocks):
         tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
@@ -393,7 +392,7 @@ def do_bench_many(
         }
 
 
-# -- pretty table ---------------------------------------------------------
+# print table
 
 
 def format_table(measurements: Iterable[Measurement]) -> str:

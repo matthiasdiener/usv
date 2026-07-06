@@ -64,7 +64,7 @@ class GPUTimer(ABC):
         return np.array([self.value(h) for h in handles], dtype=np.float64)
 
 
-# -- torch backend --------------------------------------------------------
+# torch backend
 
 
 class _TorchTimer(GPUTimer):
@@ -100,7 +100,7 @@ class _TorchTimer(GPUTimer):
         return start.elapsed_time(end) / 1000.0 / inner
 
 
-# -- wall-clock fallback (CPU-only or unsupported GPU) --------------------
+# wall-clock fallback (CPU-only or unsupported GPU)
 
 
 class _WallClockTimer(GPUTimer):
@@ -127,7 +127,7 @@ class _WallClockTimer(GPUTimer):
         return handle
 
 
-# -- factory --------------------------------------------------------------
+# factory
 
 
 def get_timer(backend: str = "auto") -> GPUTimer:

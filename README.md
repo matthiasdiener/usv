@@ -87,7 +87,7 @@ def make_matmul(N, nbuf=8):
 | `min_iters_time` | `None` | If set (s), sample until this much kernel time elapses (floor on `iters`). |
 | `cache_flush` | `False` | Zero an L2-sized buffer before each sample. |
 | `flush_mb` | `None` | Flush buffer size in MB; `None` sizes it from the device L2 cache. |
-| `lock_clocks` | `False` | Pin GPU clocks to the device max for the run (see `fixed_clocks` for a specific MHz). |
+| `lock_clocks` | `False` | Pin supported GPU clocks for the run (see `fixed_clocks`). |
 | `timer` | `"auto"` | `auto` \| `torch` \| `wall`, or a `GPUTimer`. |
 | `name` | `""` | Label for printing. |
 | `flops` / `bytes` | `None` | Per-call work -> `TFLOP/s` / `GB/s` columns. |
@@ -114,21 +114,15 @@ A big source of run-to-run variance in GPU micro-benchmarks is usually not
 the kernel - it's the GPU changing its clock (DVFS / boost / thermal throttle)
 between runs. Interleaving (above) spreads that noise across benchmarks, but for
 *reproducible absolute* numbers you want to pin the clocks to a fixed frequency
-before measuring:
+before measuring.
 
-- **NVIDIA** - enable persistence mode and lock the SM/memory clocks, e.g.
-  `sudo nvidia-smi -pm 1 && sudo nvidia-smi --lock-gpu-clocks=<MHz> --lock-memory-clocks=<MHz>`
-  (reset with `nvidia-smi -rgc -rmc`). See
-  [Can I fix my GPU clock rate to ensure consistent profiling results?](https://stackoverflow.com/questions/64701751/can-i-fix-my-gpu-clock-rate-to-ensure-consistent-profiling-results)
-- **AMD** - use *performance determinism* mode, which caps the GPU to a fixed
-  frequency. See
+- **AMD** - see
   [AMD SMI - performance determinism](https://rocm.docs.amd.com/projects/amdsmi/en/develop/conceptual/perf-determinism.html)
 
 Triton does this in an opt-in helper,
 `triton.testing.set_gpu_clock(ref_sm_clock, ref_mem_clock)`, which hard-codes a
-reference clock. `usv` provides `usv.fixed_clocks()` - a cross-vendor context
-manager that locks to the device's **max** clock (NVIDIA locks SM + memory
-clocks, AMD forces performance level HIGH) and restores them on exit:
+reference clock. `usv` provides `usv.fixed_clocks()` - a context manager
+that forces performance level HIGH and restores it on exit:
 
 ```python
 from usv import do_bench, fixed_clocks
@@ -143,9 +137,6 @@ automatically - use it only when you need reproducible absolute numbers.
 For a single measurement you can pass it inline instead:
 `do_bench(..., lock_clocks=True)` does the same lock around that one call; use
 the `fixed_clocks()` context manager to lock once around a loop or sweep.
-(Locking to the absolute max can still throttle under sustained load; a slightly
-sub-max clock - set manually via the commands above - is often more
-reproducible.)
 
 ## License
 
