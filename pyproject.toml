@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,7 @@ description = "Unladen Swallow Velocity - a GPU benchmarking tool"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "usv contributors" }]
+authors = [{ name="Matthias Diener", email="matthias.diener@gmail.com" }]
 keywords = ["benchmark", "gpu", "cuda", "rocm", "performance"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,6 +22,10 @@ dependencies = [
     "numpy>=1.24",
     "torch>=2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/matthiasdiener/usv/"
+Issues = "https://github.com/matthiasdiener/usv/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
