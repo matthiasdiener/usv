@@ -1,15 +1,30 @@
-"""Result serialization and loading."""
+"""Write benchmark results (Measurements) to CSV."""
 
 from __future__ import annotations
 
-import json
+import csv
 import os
 import re
 import subprocess
-import time
-from typing import Any
+from typing import TYPE_CHECKING
 
-__all__ = ["save_results", "load_results"]
+if TYPE_CHECKING:
+    from usv.bench import Measurement
+
+__all__ = ["save_results", "save_samples", "load_results"]
+
+_FIELDS = [
+    "name",
+    "n",
+    "inner",
+    "median_ms",
+    "mean_ms",
+    "stdev_ms",
+    "min_ms",
+    "max_ms",
+    "tflops",
+    "gbps",
+]
 
 
 def _get_commit_hash() -> str:
@@ -26,42 +41,119 @@ def _get_commit_hash() -> str:
         return "unknown"
 
 
-def save_results(
-    all_results: dict[str, Any],
-    *,
-    label: str | None = None,
-    results_dir: str | None = None,
-) -> str:
-    """Write raw per-call samples to ``<results_dir>/<hash>[-<label>].json``.
+def _as_list(measurements) -> list:
+    """Normalize the accepted input shapes into a list of Measurements."""
+    if isinstance(measurements, dict):
+        return list(measurements.values())
+    if hasattr(measurements, "samples"):  # a single Measurement
+        return [measurements]
+    return list(measurements)
 
-    Returns the path written.
-    """
-    commit = _get_commit_hash()
+
+def _resolve_path(
+    path: str | None,
+    results_dir: str | None,
+    label: str | None,
+    suffix: str,
+) -> str:
+    """Return an explicit *path* or ``<results_dir>/<commit>[-<label>]<suffix>.csv``."""
+    if path is not None:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        return path
     results_dir = results_dir or os.path.join(os.getcwd(), "results")
     os.makedirs(results_dir, exist_ok=True)
-
-    suffix = ""
+    tag = ""
     if label:
-        suffix = "-" + re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("_")
-    path = os.path.join(results_dir, f"{commit[:8]}{suffix}.json")
+        tag = "-" + re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("_")
+    return os.path.join(results_dir, f"{_get_commit_hash()[:8]}{tag}{suffix}.csv")
 
-    if os.path.exists(path):
-        with open(path) as f:
-            data = json.load(f)
-    else:
-        data = {
-            "commit_hash": commit,
-            "timestamp": int(time.time()),
-            "results": {},
-        }
-    data["results"].update(all_results)
 
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+def _row(m: "Measurement") -> dict[str, object]:
+    return {
+        "name": m.name,
+        "n": m.n,
+        "inner": m.inner,
+        "median_ms": f"{m.median * 1e3:.6f}",
+        "mean_ms": f"{m.mean * 1e3:.6f}",
+        "stdev_ms": f"{m.std * 1e3:.6f}",
+        "min_ms": f"{m.min * 1e3:.6f}",
+        "max_ms": f"{m.max * 1e3:.6f}",
+        "tflops": f"{m.tflops:.4f}" if m.tflops is not None else "",
+        "gbps": f"{m.gbps:.4f}" if m.gbps is not None else "",
+    }
+
+
+def save_results(
+    measurements,
+    path: str | None = None,
+    *,
+    results_dir: str | None = None,
+    label: str | None = None,
+) -> str:
+    """Write *measurements* to a CSV file, one row per benchmark.
+
+    *measurements* may be a single :class:`~usv.Measurement`, an iterable of
+    them, or the ``dict[str, Measurement]`` returned by
+    :func:`~usv.do_bench_many`.  Columns are ``name, n, inner, median_ms,
+    mean_ms, stdev_ms, min_ms, max_ms, tflops, gbps`` (throughput cells are
+    blank when ``flops`` / ``bytes`` were not supplied).
+
+    With *path* the CSV is written there; otherwise it goes to
+    ``<results_dir or ./results>/<commit>[-<label>].csv``.  Returns the path.
+    """
+    items = _as_list(measurements)
+    path = _resolve_path(path, results_dir, label, "")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_FIELDS)
+        writer.writeheader()
+        for m in items:
+            writer.writerow(_row(m))
     return path
 
 
-def load_results(path: str) -> dict[str, Any]:
-    """Load a result JSON produced by :func:`save_results`."""
-    with open(path) as f:
-        return json.load(f)
+def save_samples(
+    measurements,
+    path: str | None = None,
+    *,
+    results_dir: str | None = None,
+    label: str | None = None,
+) -> str:
+    """Write raw per-call timing samples to a CSV, one row per sample.
+
+    Mirrors the ``--csv-samples`` output: for every benchmark, each of its
+    per-call timings (``Measurement.samples``) is written as its own row with
+    columns ``name, sample_idx, time_ms``.  This preserves the full timing
+    distribution for downstream analysis, whereas :func:`save_results` keeps
+    only summary statistics.
+
+    *measurements* accepts the same shapes as :func:`save_results` (a single
+    :class:`~usv.Measurement`, an iterable of them, or the
+    ``dict[str, Measurement]`` from :func:`~usv.do_bench_many`).
+
+    With *path* the CSV is written there; otherwise it goes to
+    ``<results_dir or ./results>/<commit>[-<label>]-samples.csv``.  Returns the
+    path.
+    """
+    items = _as_list(measurements)
+    path = _resolve_path(path, results_dir, label, "-samples")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["name", "sample_idx", "time_ms"])
+        writer.writeheader()
+        for m in items:
+            for i, t in enumerate(m.samples):
+                writer.writerow(
+                    {
+                        "name": m.name,
+                        "sample_idx": i,
+                        "time_ms": f"{float(t) * 1e3:.6f}",
+                    }
+                )
+    return path
+
+
+def load_results(path: str) -> list[dict[str, str]]:
+    """Load a CSV written by :func:`save_results` into a list of row dicts."""
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))

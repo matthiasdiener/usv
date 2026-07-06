@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from usv import Measurement, do_bench, do_bench_many, format_table, rotating
-from usv.results import load_results, save_results
+from usv.results import load_results, save_results, save_samples
 from usv.timer import get_timer
 
 
@@ -167,9 +167,35 @@ def test_format_table():
 
 
 def test_save_load_results():
-    data = {"suite.a": {"samples": [0.001, 0.002], "inner": 1}}
+    ms = {
+        "a": Measurement(samples=np.array([1e-3, 2e-3]), name="a", flops=1e9),
+        "b": Measurement(samples=np.array([3e-3]), name="b"),
+    }
     with tempfile.TemporaryDirectory() as tmp:
-        path = save_results(data, label="test", results_dir=tmp)
-        assert os.path.isfile(path)
-        loaded = load_results(path)
-        assert loaded["results"]["suite.a"]["samples"] == [0.001, 0.002]
+        path = os.path.join(tmp, "out.csv")
+        assert save_results(ms, path) == path
+        rows = load_results(path)
+        assert {r["name"] for r in rows} == {"a", "b"}
+        a = next(r for r in rows if r["name"] == "a")
+        assert a["n"] == "2" and float(a["median_ms"]) > 0
+        assert a["tflops"] != ""  # flops was provided
+        b = next(r for r in rows if r["name"] == "b")
+        assert b["tflops"] == ""  # no flops -> blank throughput
+
+
+def test_save_samples():
+    ms = {
+        "a": Measurement(samples=np.array([1e-3, 2e-3, 3e-3]), name="a"),
+        "b": Measurement(samples=np.array([5e-3]), name="b"),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "samples.csv")
+        assert save_samples(ms, path) == path
+        rows = load_results(path)
+        # one row per raw sample across all benchmarks
+        assert len(rows) == 4
+        assert [r["name"] for r in rows].count("a") == 3
+        a0 = next(r for r in rows if r["name"] == "a" and r["sample_idx"] == "0")
+        assert abs(float(a0["time_ms"]) - 1.0) < 1e-6  # 1e-3 s -> 1 ms
+        b0 = next(r for r in rows if r["name"] == "b")
+        assert b0["sample_idx"] == "0" and abs(float(b0["time_ms"]) - 5.0) < 1e-6
