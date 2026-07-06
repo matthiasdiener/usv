@@ -37,7 +37,7 @@ bufs = [torch.randn(1024, 1024, device="cuda") for _ in range(8)]
 nxt = rotating(bufs)                       # rotating input buffers
 
 m = do_bench(lambda: nxt() @ nxt(), flops=2 * 1024**3)
-print(m)                                   # 0.1234 ms +/- 0.0021 (median+/-std, n=100)  17.4 TFLOP/s
+print(m)                                   # 17.4 TFLOP/s  (0.1234 ms +/- 0.0021, median+/-std, n=100)
 print(m.median, m.tflops)
 ```
 

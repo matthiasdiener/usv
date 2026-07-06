@@ -17,14 +17,16 @@ _FIELDS = [
     "name",
     "n",
     "inner",
+    "tflops",
+    "gbps",
     "median_ms",
     "mean_ms",
     "stdev_ms",
     "min_ms",
     "max_ms",
-    "tflops",
-    "gbps",
 ]
+
+_SAMPLE_FIELDS = ["name", "sample_idx", "tflops", "gbps", "time_ms"]
 
 
 def _get_commit_hash() -> str:
@@ -75,14 +77,20 @@ def _row(m: "Measurement") -> dict[str, object]:
         "name": m.name,
         "n": m.n,
         "inner": m.inner,
+        "tflops": f"{m.tflops:.4f}" if m.tflops is not None else "",
+        "gbps": f"{m.gbps:.4f}" if m.gbps is not None else "",
         "median_ms": f"{m.median * 1e3:.6f}",
         "mean_ms": f"{m.mean * 1e3:.6f}",
         "stdev_ms": f"{m.std * 1e3:.6f}",
         "min_ms": f"{m.min * 1e3:.6f}",
         "max_ms": f"{m.max * 1e3:.6f}",
-        "tflops": f"{m.tflops:.4f}" if m.tflops is not None else "",
-        "gbps": f"{m.gbps:.4f}" if m.gbps is not None else "",
     }
+
+
+def _sample_throughput(work: float | None, sample_s: float, scale: float) -> str:
+    if not work or sample_s <= 0:
+        return ""
+    return f"{work / sample_s / scale:.4f}"
 
 
 def save_results(
@@ -96,8 +104,8 @@ def save_results(
 
     *measurements* may be a single :class:`~usv.Measurement`, an iterable of
     them, or the ``dict[str, Measurement]`` returned by
-    :func:`~usv.do_bench_many`.  Columns are ``name, n, inner, median_ms,
-    mean_ms, stdev_ms, min_ms, max_ms, tflops, gbps`` (throughput cells are
+    :func:`~usv.do_bench_many`.  Columns are ``name, n, inner, tflops, gbps,
+    median_ms, mean_ms, stdev_ms, min_ms, max_ms`` (throughput cells are
     blank when ``flops`` / ``bytes`` were not supplied).
 
     With *path* the CSV is written there; otherwise it goes to
@@ -124,9 +132,10 @@ def save_samples(
 
     Mirrors the ``--csv-samples`` output: for every benchmark, each of its
     per-call timings (``Measurement.samples``) is written as its own row with
-    columns ``name, sample_idx, time_ms``.  This preserves the full timing
-    distribution for downstream analysis, whereas :func:`save_results` keeps
-    only summary statistics.
+    columns ``name, sample_idx, tflops, gbps, time_ms``.  Throughput cells are
+    blank when ``flops`` / ``bytes`` were not supplied.  This preserves the full
+    timing distribution for downstream analysis, whereas :func:`save_results`
+    keeps only summary statistics.
 
     *measurements* accepts the same shapes as :func:`save_results` (a single
     :class:`~usv.Measurement`, an iterable of them, or the
@@ -139,15 +148,18 @@ def save_samples(
     items = _as_list(measurements)
     path = _resolve_path(path, results_dir, label, "-samples")
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["name", "sample_idx", "time_ms"])
+        writer = csv.DictWriter(f, fieldnames=_SAMPLE_FIELDS)
         writer.writeheader()
         for m in items:
-            for i, t in enumerate(m.samples):
+            for i, sample_s in enumerate(m.samples):
+                sample_s = float(sample_s)
                 writer.writerow(
                     {
                         "name": m.name,
                         "sample_idx": i,
-                        "time_ms": f"{float(t) * 1e3:.6f}",
+                        "tflops": _sample_throughput(m.flops, sample_s, 1e12),
+                        "gbps": _sample_throughput(m.bytes, sample_s, 1e9),
+                        "time_ms": f"{sample_s * 1e3:.6f}",
                     }
                 )
     return path

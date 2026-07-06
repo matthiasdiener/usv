@@ -133,6 +133,13 @@ def test_measurement_throughput():
     assert abs(m.gbps - 1.0) < 1e-9
 
 
+def test_measurement_repr_reports_throughput_first():
+    m = Measurement(samples=np.array([1e-3]), name="x", flops=1e9)
+    out = repr(m)
+    assert out.startswith("x: 1.00 TFLOP/s")
+    assert out.index("TFLOP/s") < out.index("ms")
+
+
 def test_rotating():
     nxt = rotating([10, 20, 30])
     assert [nxt() for _ in range(7)] == [10, 20, 30, 10, 20, 30, 10]
@@ -161,6 +168,7 @@ def test_format_table():
     table = format_table(ms)
     assert "benchmark" in table
     assert "TFLOP/s" in table  # shown because one measurement has flops
+    assert table.splitlines()[0].index("TFLOP/s") < table.splitlines()[0].index("median")
 
 
 # -- Result I/O -----------------------------------------------------------
@@ -168,7 +176,7 @@ def test_format_table():
 
 def test_save_load_results():
     ms = {
-        "a": Measurement(samples=np.array([1e-3, 2e-3]), name="a", flops=1e9),
+        "a": Measurement(samples=np.array([1e-3, 2e-3]), name="a", flops=1e9, bytes=1e6),
         "b": Measurement(samples=np.array([3e-3]), name="b"),
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -179,13 +187,16 @@ def test_save_load_results():
         a = next(r for r in rows if r["name"] == "a")
         assert a["n"] == "2" and float(a["median_ms"]) > 0
         assert a["tflops"] != ""  # flops was provided
+        assert a["gbps"] != ""  # bytes was provided
+        assert list(rows[0]).index("tflops") < list(rows[0]).index("median_ms")
         b = next(r for r in rows if r["name"] == "b")
         assert b["tflops"] == ""  # no flops -> blank throughput
+        assert b["gbps"] == ""  # no bytes -> blank throughput
 
 
 def test_save_samples():
     ms = {
-        "a": Measurement(samples=np.array([1e-3, 2e-3, 3e-3]), name="a"),
+        "a": Measurement(samples=np.array([1e-3, 2e-3, 3e-3]), name="a", flops=1e9, bytes=1e6),
         "b": Measurement(samples=np.array([5e-3]), name="b"),
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -197,5 +208,9 @@ def test_save_samples():
         assert [r["name"] for r in rows].count("a") == 3
         a0 = next(r for r in rows if r["name"] == "a" and r["sample_idx"] == "0")
         assert abs(float(a0["time_ms"]) - 1.0) < 1e-6  # 1e-3 s -> 1 ms
+        assert abs(float(a0["tflops"]) - 1.0) < 1e-6
+        assert abs(float(a0["gbps"]) - 1.0) < 1e-6
+        assert list(a0).index("tflops") < list(a0).index("time_ms")
         b0 = next(r for r in rows if r["name"] == "b")
         assert b0["sample_idx"] == "0" and abs(float(b0["time_ms"]) - 5.0) < 1e-6
+        assert b0["tflops"] == "" and b0["gbps"] == ""

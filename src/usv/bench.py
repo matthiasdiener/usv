@@ -95,15 +95,19 @@ class Measurement:
 
     def __repr__(self) -> str:
         tag = f"{self.name}: " if self.name else ""
-        out = f"{tag}{self.median * 1e3:.4f} ms +/- {self.std * 1e3:.4f} (median+/-std, n={self.n}"
+        stats = f"{self.median * 1e3:.4f} ms +/- {self.std * 1e3:.4f}"
+        details = f"median+/-std, n={self.n}"
         if self.inner > 1:
-            out += f", inner={self.inner}"
-        out += ")"
+            details += f", inner={self.inner}"
+
+        throughput = []
         if self.tflops is not None:
-            out += f"  {self.tflops:.2f} TFLOP/s"
+            throughput.append(f"{self.tflops:.2f} TFLOP/s")
         if self.gbps is not None:
-            out += f"  {self.gbps:.1f} GB/s"
-        return out
+            throughput.append(f"{self.gbps:.1f} GB/s")
+        if throughput:
+            return f"{tag}{'  '.join(throughput)}  ({stats}, {details})"
+        return f"{tag}{stats} ({details})"
 
 
 # helpers
@@ -405,24 +409,26 @@ def format_table(measurements: Iterable[Measurement]) -> str:
     show_gbps = any(m.gbps is not None for m in ms)
     w = max(max(len(m.name) for m in ms), len("benchmark"))
 
-    header = (
-        f"{'benchmark':<{w}}  {'median':>10}  {'mean':>10}  "
-        f"{'stdev':>10}  {'min':>10}  {'n':>5}"
-    )
+    header = f"{'benchmark':<{w}}"
     if show_tflops:
         header += f"  {'TFLOP/s':>9}"
     if show_gbps:
         header += f"  {'GB/s':>9}"
+    header += (
+        f"  {'median':>10}  {'mean':>10}  "
+        f"{'stdev':>10}  {'min':>10}  {'n':>5}"
+    )
     lines = [header, "-" * len(header)]
 
     for m in ms:
-        row = (
-            f"{m.name:<{w}}  {m.median * 1e3:>8.3f}ms  {m.mean * 1e3:>8.3f}ms  "
-            f"{m.std * 1e3:>8.3f}ms  {m.min * 1e3:>8.3f}ms  {m.n:>5}"
-        )
+        row = f"{m.name:<{w}}"
         if show_tflops:
             row += f"  {m.tflops:>9.2f}" if m.tflops is not None else f"  {'':>9}"
         if show_gbps:
             row += f"  {m.gbps:>9.1f}" if m.gbps is not None else f"  {'':>9}"
+        row += (
+            f"  {m.median * 1e3:>8.3f}ms  {m.mean * 1e3:>8.3f}ms  "
+            f"{m.std * 1e3:>8.3f}ms  {m.min * 1e3:>8.3f}ms  {m.n:>5}"
+        )
         lines.append(row)
     return "\n".join(lines)
