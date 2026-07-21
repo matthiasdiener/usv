@@ -22,6 +22,8 @@ Optional accuracy features:
   different memory, reducing cache-residency bias without a full flush.
 - **Event-based GPU timing** - per-call `cuda.Event` timing (works on NVIDIA and
   AMD/ROCm via PyTorch), with a CPU wall-clock fallback for development off-GPU.
+- **JAX timing** - an opt-in `timer="jax"` backend that synchronizes with
+  `jax.block_until_ready` for benchmarking JAX callables.
 
 ## Install
 
@@ -94,7 +96,7 @@ def make_matmul(N, nbuf=8):
 | `flush_mb` | `None` | Flush buffer size in MB; `None` sizes it from the device L2 cache. |
 | `lock_clocks` | `False` | Pin supported GPU clocks for the run (see `fixed_clocks`). |
 | `cudagraph` | `False` | Capture into a CUDA/HIP graph and time replays (no launch overhead). |
-| `timer` | `"auto"` | `auto` \| `torch` \| `wall`, or a `GPUTimer`. |
+| `timer` | `"auto"` | `auto` \| `torch` \| `jax` \| `wall`, or a `GPUTimer`. |
 | `name` | `""` | Label for printing. |
 | `flops` / `bytes` | `None` | Per-call work -> `TFLOP/s` / `GB/s` columns. |
 
@@ -187,6 +189,25 @@ if others:
 
 It is best-effort and read-only: if no SMI tool is available (or its output
 can't be parsed) it returns an empty list rather than failing. Off by default.
+
+## JAX
+
+JAX callables can be timed with the opt-in `timer="jax"` backend. JAX dispatches
+asynchronously and exposes no CUDA events, so it times wall-clock around the
+calls and blocks on the result with `jax.block_until_ready` (the usual JAX
+micro-benchmark pattern). The callable should *return* its output so there is
+something to block on, and should be `jit`-compiled for realistic numbers:
+
+```python
+import jax, jax.numpy as jnp
+from usv import do_bench
+
+f = jax.jit(lambda: x @ x)
+m = do_bench(f, timer="jax")
+```
+
+Install the extra with `pip install -e ".[jax]"`. `"auto"` never selects JAX -
+it is opt-in via `timer="jax"`.
 
 ## License
 

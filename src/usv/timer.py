@@ -100,6 +100,46 @@ class _TorchTimer(GPUTimer):
         return start.elapsed_time(end) / 1000.0 / inner
 
 
+# jax backend
+
+
+class _JaxTimer(GPUTimer):
+    """Wall-clock timing synchronized with ``jax.block_until_ready``.
+
+    JAX dispatches asynchronously and does not expose CUDA events, so timing
+    wraps *inner* calls in ``perf_counter`` and blocks on the last result to
+    force device completion (the standard JAX micro-benchmark pattern).  The
+    benchmarked callable should therefore *return* its output array(s) so there
+    is something to block on; ``jit`` the function for realistic numbers.  Like
+    the wall-clock timer this is synchronous, so it cannot overlap device work
+    across samples.
+    """
+
+    def __init__(self) -> None:
+        import jax
+
+        self._jax = jax
+        jax.devices()  # initialize the backend up front
+
+    def synchronize(self) -> None:
+        pass
+
+    def open(self, fn, inner=1, before=None):
+        jax = self._jax
+        if before is not None:
+            before()
+        t0 = time.perf_counter()
+        out = None
+        for _ in range(inner):
+            out = fn()
+        jax.block_until_ready(out)
+        t1 = time.perf_counter()
+        return (t1 - t0) / inner
+
+    def value(self, handle) -> float:
+        return handle
+
+
 # wall-clock fallback (CPU-only or unsupported GPU)
 
 
@@ -137,11 +177,15 @@ def get_timer(backend: str = "auto") -> GPUTimer:
     ----------
     backend
         ``"torch"`` - use ``torch.cuda.Event`` (works on NVIDIA & AMD).
+        ``"jax"``   - wall-clock timing synced with ``jax.block_until_ready``
+        (opt-in; the callable should return its output array).
         ``"wall"``  - plain ``time.perf_counter`` (no GPU sync).
-        ``"auto"``  - try ``torch``, then fall back to ``wall``.
+        ``"auto"``  - try ``torch``, then fall back to ``wall`` (never ``jax``).
     """
     if backend == "torch":
         return _TorchTimer()
+    if backend == "jax":
+        return _JaxTimer()
     if backend == "wall":
         return _WallClockTimer()
     if backend != "auto":
