@@ -1,6 +1,6 @@
 # usv - Unladen Swallow Velocity
 
-GPU micro-benchmarking for AMD and NVIDIA, in the spirit of
+GPU micro-benchmarking, in the spirit of
 [`asv`](https://github.com/airspeed-velocity/asv) /
 [`torch.utils.benchmark`](https://docs.pytorch.org/docs/stable/benchmark_utils.html) /
 [`triton.testing.do_bench`](https://triton-lang.org/main/python-api/generated/triton.testing.do_bench.html).
@@ -23,9 +23,8 @@ Optional accuracy features:
   `monitor=True`, AMD only).
 - **Rotating buffers** - cycle inputs through a ring so back-to-back launches see
   different memory, reducing cache-residency bias without a full flush;
-  `rotating_buffers` auto-sizes the ring to exceed L2 (CUTLASS-style).
-- **Event-based GPU timing** - per-call `cuda.Event` timing (works on NVIDIA and
-  AMD/ROCm via PyTorch), with a CPU wall-clock fallback for development off-GPU.
+  `rotating_buffers` auto-sizes the ring to exceed L2.
+- **Event-based GPU timing** - per-call `cuda.Event` timing, with a CPU wall-clock fallback for development off-GPU.
 - **JAX timing** - an opt-in `timer="jax"` backend that synchronizes with
   `jax.block_until_ready` for benchmarking JAX callables.
 
@@ -306,6 +305,14 @@ print(mon.summary())
 
 Best-effort and read-only: if `rocm-smi` is missing or unparsable, sampling
 yields nothing rather than failing. Off by default; AMD / `rocm-smi` only for now.
+
+## Sources
+
+- [`asv` (airspeed velocity)](https://github.com/airspeed-velocity/asv)
+- [`torch.utils.benchmark`](https://docs.pytorch.org/docs/stable/benchmark_utils.html)
+- [`triton.testing.do_bench`](https://triton-lang.org/main/python-api/generated/triton.testing.do_bench.html)
+- [CUTLASS GEMM performance measurement methodology](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/gemm_performance_measurement_methodology_guidelines.html)
+- [hipBLASLt standard benchmarking](https://amd.atlassian.net/wiki/spaces/MLSE/pages/744192648/hipBLASLt+Standard+Benchmarking)
 
 ## License
 
