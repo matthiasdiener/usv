@@ -19,7 +19,8 @@ Optional accuracy features:
 - **Interference detection** - check the vendor SMI for *other* processes on the
   GPU before trusting a number (opt-in, `check_interference=True`).
 - **Rotating buffers** - cycle inputs through a ring so back-to-back launches see
-  different memory, reducing cache-residency bias without a full flush.
+  different memory, reducing cache-residency bias without a full flush;
+  `rotating_buffers` auto-sizes the ring to exceed L2 (CUTLASS-style).
 - **Event-based GPU timing** - per-call `cuda.Event` timing (works on NVIDIA and
   AMD/ROCm via PyTorch), with a CPU wall-clock fallback for development off-GPU.
 - **JAX timing** - an opt-in `timer="jax"` backend that synchronizes with
@@ -78,6 +79,22 @@ def make_matmul(N, nbuf=8):
     nxt = rotating(bufs)
     return lambda: nxt() @ nxt()
 ```
+
+To defeat L2 residency the way the
+[CUTLASS methodology](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/gemm_performance_measurement_methodology_guidelines.html)
+recommends, the ring should span at least 2x the L2 cache. `rotating_buffers`
+sizes it for you from a buffer factory (inferring the per-buffer bytes and the
+device L2 size), so a buffer is evicted before it is reused:
+
+```python
+from usv import rotating_buffers
+
+nxt = rotating_buffers(lambda: torch.randn(N, N, device="cuda"))   # >= 2x L2
+m = do_bench(lambda: nxt() @ nxt())
+```
+
+`rotation_count(bytes_per_buffer, l2_mult=2.0)` exposes just the sizing math if
+you build the ring yourself.
 
 ## API
 

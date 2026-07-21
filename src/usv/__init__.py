@@ -6,6 +6,8 @@ from usv.bench import (
     do_bench_many,
     format_table,
     rotating,
+    rotating_buffers,
+    rotation_count,
 )
 from usv.asv import run_benchmarks
 from usv.clocks import fixed_clocks, gpu_vendor
@@ -19,6 +21,8 @@ __all__ = [
     "do_bench",
     "do_bench_many",
     "rotating",
+    "rotating_buffers",
+    "rotation_count",
     "format_table",
     "run_benchmarks",
     "fixed_clocks",

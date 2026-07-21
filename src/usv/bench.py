@@ -32,6 +32,8 @@ __all__ = [
     "do_bench",
     "do_bench_many",
     "rotating",
+    "rotating_buffers",
+    "rotation_count",
     "format_table",
 ]
 
@@ -126,6 +128,77 @@ def rotating(items: list) -> Callable[[], object]:
     """
     it = itertools.cycle(items)
     return lambda: next(it)
+
+
+def _nbytes(buf) -> int:
+    """Best-effort byte size of a buffer (torch tensor or numpy array)."""
+    numel = getattr(buf, "numel", None)
+    element_size = getattr(buf, "element_size", None)
+    if callable(numel) and callable(element_size):  # torch tensor
+        return int(numel()) * int(element_size())
+    nbytes = getattr(buf, "nbytes", None)  # numpy array / memoryview
+    if nbytes is not None:
+        return int(nbytes)
+    raise TypeError(
+        "cannot determine the byte size of the buffer; "
+        "pass bytes_per_buffer= explicitly to rotating_buffers()"
+    )
+
+
+def rotation_count(
+    bytes_per_buffer: int,
+    *,
+    l2_mult: float = 2.0,
+    min_buffers: int = 2,
+    l2_bytes: int | None = None,
+) -> int:
+    """Number of rotating buffers needed so the ring exceeds the L2 cache.
+
+    Following the CUTLASS buffer-rotation guideline, the ring should span at
+    least ``l2_mult`` times the L2 cache (default 2x) with at least
+    ``min_buffers`` buffers, so a buffer is evicted from L2 by the time it is
+    reused.  *l2_bytes* defaults to the device L2 size (via torch); when it
+    cannot be queried, ``min_buffers`` is returned.
+    """
+    if bytes_per_buffer <= 0:
+        return min_buffers
+    if l2_bytes is None:
+        l2_bytes = _l2_cache_size_bytes()
+    if not l2_bytes:
+        return min_buffers
+    needed = math.ceil(l2_mult * l2_bytes / bytes_per_buffer)
+    return max(min_buffers, int(needed))
+
+
+def rotating_buffers(
+    make: Callable[[], object],
+    *,
+    count: int | None = None,
+    bytes_per_buffer: int | None = None,
+    l2_mult: float = 2.0,
+    min_buffers: int = 2,
+    l2_bytes: int | None = None,
+) -> Callable[[], object]:
+    """Build an L2-sized rotation ring by calling *make* enough times.
+
+    *make* is a zero-argument factory returning one fresh buffer (e.g. a torch
+    tensor).  Unless *count* is given, the number of buffers is sized with
+    :func:`rotation_count` so the ring exceeds ``l2_mult`` times the L2 cache;
+    the per-buffer size is inferred from the first buffer (or *bytes_per_buffer*
+    if given).  Returns a :func:`rotating` callable over the buffers::
+
+        nxt = rotating_buffers(lambda: torch.randn(N, N, device="cuda"))
+        do_bench(lambda: nxt() @ nxt())
+    """
+    first = make()
+    if count is None:
+        nbytes = bytes_per_buffer if bytes_per_buffer is not None else _nbytes(first)
+        count = rotation_count(
+            nbytes, l2_mult=l2_mult, min_buffers=min_buffers, l2_bytes=l2_bytes
+        )
+    count = max(1, int(count))
+    buffers = [first] + [make() for _ in range(count - 1)]
+    return rotating(buffers)
 
 
 def _l2_cache_size_bytes() -> int | None:
