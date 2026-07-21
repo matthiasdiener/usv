@@ -20,7 +20,9 @@ def test_rotation_count_respects_min_buffers():
     assert rotation_count(10_000, l2_mult=2.0, min_buffers=2, l2_bytes=100) == 2
 
 
-def test_rotation_count_unknown_l2_falls_back_to_min():
+def test_rotation_count_unknown_l2_falls_back_to_min(monkeypatch):
+    # When the L2 size can't be queried, fall back to min_buffers.
+    monkeypatch.setattr("usv.bench._l2_cache_size_bytes", lambda: None)
     assert rotation_count(32, l2_bytes=None, min_buffers=3) == 3
 
 
