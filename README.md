@@ -18,6 +18,9 @@ Optional accuracy features:
   `cudagraph=True`).
 - **Interference detection** - check the vendor SMI for *other* processes on the
   GPU before trusting a number (opt-in, `check_interference=True`).
+- **Clock/power/temp monitoring** - sample `rocm-smi` during timing and warn if
+  the GPU clock drifted, since locking clocks alone isn't enough (opt-in,
+  `monitor=True`, AMD only).
 - **Rotating buffers** - cycle inputs through a ring so back-to-back launches see
   different memory, reducing cache-residency bias without a full flush;
   `rotating_buffers` auto-sizes the ring to exceed L2 (CUTLASS-style).
@@ -114,6 +117,7 @@ you build the ring yourself.
 | `lock_clocks` | `False` | Pin supported GPU clocks for the run (see `fixed_clocks`). |
 | `cudagraph` | `False` | Capture into a CUDA/HIP graph and time replays (no launch overhead). |
 | `cooldown_s` | `0.0` | Idle sleep (s) after timing, to cool the GPU between benchmarks. |
+| `monitor` | `False` | Sample `rocm-smi` during timing; attach summary, warn on clock drift (AMD). |
 | `timer` | `"auto"` | `auto` \| `torch` \| `jax` \| `wall`, or a `GPUTimer`. |
 | `name` | `""` | Label for printing. |
 | `flops` / `bytes` | `None` | Per-call work -> `TFLOP/s` / `GB/s` columns. |
@@ -271,6 +275,36 @@ It requires an *importable* target (a `"module:ClassName"` string, or a class
 defined at module scope - not in `__main__` or a local scope) and
 JSON-serializable `do_bench` keywords (e.g. `timer="wall"`, not a `GPUTimer`
 instance). Off by default; the in-process path shares one instance per class.
+
+## Clock / power / temperature monitoring
+
+The [CUTLASS methodology](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/gemm_performance_measurement_methodology_guidelines.html)
+points out that *locking* clocks isn't enough - power and thermal controllers
+can still move the frequency, so the settled clock should be monitored during
+the profiling iterations. With `monitor=True`, usv samples `rocm-smi` in a
+background thread while timing, attaches a summary to each `Measurement`, and
+warns if the GPU clock drifted (AMD only):
+
+```python
+from usv import do_bench
+
+m = do_bench(lambda: x @ x, monitor=True)   # warns if sclk drifts > 5%
+print(m.monitor)   # {'n': 20, 'sclk_mhz': {'min':.., 'mean':.., 'max':.., 'std':..}, 'power_w': {..}, 'temp_c': {..}}
+```
+
+Or sample it yourself:
+
+```python
+from usv import GpuMonitor, sample_rocm_smi
+
+print(sample_rocm_smi(device=0))   # one reading, or None
+with GpuMonitor(device=0) as mon:
+    ...
+print(mon.summary())
+```
+
+Best-effort and read-only: if `rocm-smi` is missing or unparsable, sampling
+yields nothing rather than failing. Off by default; AMD / `rocm-smi` only for now.
 
 ## License
 

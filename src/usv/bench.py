@@ -56,6 +56,7 @@ class Measurement:
     inner: int = 1
     flops: float | None = None
     bytes: float | None = None
+    monitor: dict | None = None
 
     def __post_init__(self) -> None:
         self.samples = np.asarray(self.samples, dtype=np.float64)
@@ -298,6 +299,21 @@ def _warn_on_interference() -> None:
         )
 
 
+def _warn_on_clock_drift(summary: dict | None, tol: float = 0.05) -> None:
+    """Warn if the monitored GPU sclk varied by more than *tol* during timing."""
+    from usv.monitor import clock_drift_fraction
+
+    frac = clock_drift_fraction(summary)
+    if frac is not None and frac > tol:
+        sclk = summary["sclk_mhz"]
+        warnings.warn(
+            f"usv: GPU sclk varied {frac * 100:.1f}% during timing "
+            f"({sclk['min']:.0f}-{sclk['max']:.0f} MHz); results may be unstable "
+            f"(consider fixed_clocks or a sustainable frequency)",
+            stacklevel=3,
+        )
+
+
 # single-callable timing
 
 
@@ -316,6 +332,9 @@ def do_bench(
     cudagraph: bool = False,
     check_interference: bool = False,
     cooldown_s: float = 0.0,
+    monitor: bool = False,
+    monitor_device: int = 0,
+    monitor_interval_s: float = 0.05,
     timer: GPUTimer | str = "auto",
     name: str = "",
     flops: float | None = None,
@@ -342,6 +361,9 @@ def do_bench(
     warns (once, before timing) if another process is found running on the GPU.
     ``cooldown_s`` sleeps that many seconds (GPU idle) after timing, e.g. to let
     the device return to a cool state between benchmarks in a sweep.
+    ``monitor=True`` samples ``rocm-smi`` during timing and attaches the
+    clock/power/temperature summary to :attr:`Measurement.monitor`, warning if
+    the GPU clock drifted (AMD only).
 
     This is a thin wrapper over :func:`do_bench_many` (a single-entry group
     with no interleaving), unwrapped to one :class:`Measurement`.
@@ -361,6 +383,9 @@ def do_bench(
         cudagraph=cudagraph,
         check_interference=check_interference,
         cooldown_s=cooldown_s,
+        monitor=monitor,
+        monitor_device=monitor_device,
+        monitor_interval_s=monitor_interval_s,
         timer=timer,
         flops={name: flops} if flops is not None else None,
         bytes={name: bytes} if bytes is not None else None,
@@ -387,6 +412,9 @@ def do_bench_many(
     cudagraph: bool = False,
     check_interference: bool = False,
     cooldown_s: float = 0.0,
+    monitor: bool = False,
+    monitor_device: int = 0,
+    monitor_interval_s: float = 0.05,
     timer: GPUTimer | str = "auto",
     flops: dict[str, float] | None = None,
     bytes: dict[str, float] | None = None,
@@ -426,6 +454,11 @@ def do_bench_many(
     ``cooldown_s`` sleeps that many seconds with the GPU idle after timing, so a
     loop of calls (e.g. via :func:`usv.run_benchmarks`) leaves the device cool
     between benchmarks - the CUTLASS-style cool-down counterpart to interleaving.
+
+    ``monitor=True`` samples ``rocm-smi`` in a background thread during the
+    profiling iterations and attaches a clock/power/temperature summary to each
+    :attr:`Measurement.monitor`, warning if the sclk drifted more than 5%
+    (AMD only; best-effort, off by default).
     """
     with _clock_lock(lock_clocks):
         tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
@@ -489,6 +522,12 @@ def do_bench_many(
                 fns[nm]()
         tm.synchronize()
 
+        mon = None
+        if monitor:
+            from usv.monitor import GpuMonitor
+
+            mon = GpuMonitor(device=monitor_device, interval_s=monitor_interval_s).start()
+
         handles: list[tuple[str, object]] = []
         if interleave:
             # Dropout round-robin: each round samples every still-active
@@ -511,6 +550,12 @@ def do_bench_many(
 
         tm.synchronize()
 
+        mon_summary = None
+        if mon is not None:
+            mon.stop()
+            mon_summary = mon.summary()
+            _warn_on_clock_drift(mon_summary)
+
         buckets: dict[str, list[float]] = {nm: [] for nm in names}
         for nm, handle in handles:
             buckets[nm].append(tm.value(handle))
@@ -522,6 +567,7 @@ def do_bench_many(
                 inner=inner_by[nm],
                 flops=flops.get(nm),
                 bytes=bytes.get(nm),
+                monitor=mon_summary,
             )
             for nm in names
         }

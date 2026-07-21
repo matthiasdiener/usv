@@ -13,6 +13,7 @@ from usv.asv import run_benchmarks
 from usv.clocks import fixed_clocks, gpu_vendor
 from usv.cudagraph import graph_replay
 from usv.interference import check_gpu_interference, gpu_processes
+from usv.monitor import GpuMonitor, sample_rocm_smi
 from usv.results import load_results, save_results, save_samples
 from usv.timer import get_timer
 
@@ -30,6 +31,8 @@ __all__ = [
     "graph_replay",
     "check_gpu_interference",
     "gpu_processes",
+    "GpuMonitor",
+    "sample_rocm_smi",
     "get_timer",
     "save_results",
     "save_samples",
