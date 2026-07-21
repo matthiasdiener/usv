@@ -216,12 +216,24 @@ def _run_in_subprocess(path: str, method_name: str, combo_index: int, kwargs: di
     else:
         env["PYTHONPATH"] = parent_path
 
-    proc = subprocess.run(
-        [sys.executable, "-m", "usv._subproc", payload],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    # If a per-benchmark timeout is set, the child aborts itself first; give the
+    # parent a small margin before it force-kills a wedged (hung-GPU) child.
+    timeout = kwargs.get("timeout")
+    run_timeout = timeout + 10.0 if timeout else None
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "usv._subproc", payload],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=run_timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise TimeoutError(
+            f"fresh-process benchmark {method_name!r}[{combo_index}] of {path!r} "
+            f"exceeded {run_timeout:g}s and was killed (GPU hang?)"
+        ) from e
     if proc.returncode != 0:
         raise RuntimeError(
             f"fresh-process benchmark {method_name!r}[{combo_index}] of {path!r} failed:\n"

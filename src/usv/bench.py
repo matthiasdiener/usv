@@ -17,10 +17,12 @@ from __future__ import annotations
 import itertools
 import math
 import random
+import signal
+import threading
 import time
 import warnings
 from collections.abc import Callable, Iterable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 import numpy as np
@@ -314,6 +316,43 @@ def _warn_on_clock_drift(summary: dict | None, tol: float = 0.05) -> None:
         )
 
 
+@contextmanager
+def _time_limit(seconds: float | None):
+    """Abort the block with ``TimeoutError`` if it runs longer than *seconds*.
+
+    Guards against a hung GPU (a wedged ``synchronize``) or a runaway benchmark.
+    Implemented with a ``SIGALRM`` interval timer, so it only takes effect on the
+    main thread of a Unix process; anywhere else it is a no-op (with a warning).
+    """
+    if seconds is None or seconds <= 0:
+        yield
+        return
+    unsupported = (
+        not hasattr(signal, "SIGALRM")
+        or not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    )
+    if unsupported:
+        warnings.warn(
+            "usv: timeout is only supported on the main thread of a Unix process; "
+            "ignoring",
+            stacklevel=2,
+        )
+        yield
+        return
+
+    def _handler(signum, frame):
+        raise TimeoutError(f"usv: benchmark exceeded timeout of {seconds:g}s (GPU hang?)")
+
+    old_handler = signal.signal(signal.SIGALRM, _handler)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
 # single-callable timing
 
 
@@ -335,6 +374,7 @@ def do_bench(
     monitor: bool = False,
     monitor_device: int = 0,
     monitor_interval_s: float = 0.05,
+    timeout: float | None = None,
     timer: GPUTimer | str = "auto",
     name: str = "",
     flops: float | None = None,
@@ -363,7 +403,9 @@ def do_bench(
     the device return to a cool state between benchmarks in a sweep.
     ``monitor=True`` samples ``rocm-smi`` during timing and attaches the
     clock/power/temperature summary to :attr:`Measurement.monitor`, warning if
-    the GPU clock drifted (AMD only).
+    the GPU clock drifted (AMD only).  ``timeout`` (seconds) aborts the call with
+    ``TimeoutError`` if timing runs longer than that, e.g. when a GPU hangs
+    (Unix main thread only).
 
     This is a thin wrapper over :func:`do_bench_many` (a single-entry group
     with no interleaving), unwrapped to one :class:`Measurement`.
@@ -386,6 +428,7 @@ def do_bench(
         monitor=monitor,
         monitor_device=monitor_device,
         monitor_interval_s=monitor_interval_s,
+        timeout=timeout,
         timer=timer,
         flops={name: flops} if flops is not None else None,
         bytes={name: bytes} if bytes is not None else None,
@@ -415,6 +458,7 @@ def do_bench_many(
     monitor: bool = False,
     monitor_device: int = 0,
     monitor_interval_s: float = 0.05,
+    timeout: float | None = None,
     timer: GPUTimer | str = "auto",
     flops: dict[str, float] | None = None,
     bytes: dict[str, float] | None = None,
@@ -459,6 +503,11 @@ def do_bench_many(
     profiling iterations and attaches a clock/power/temperature summary to each
     :attr:`Measurement.monitor`, warning if the sclk drifted more than 5%
     (AMD only; best-effort, off by default).
+
+    ``timeout`` (seconds) aborts the whole call with ``TimeoutError`` if it runs
+    longer than that - a guard against a hung GPU (a wedged ``synchronize``) or a
+    runaway benchmark.  It uses a ``SIGALRM`` timer, so it only applies on the
+    main thread of a Unix process (a no-op with a warning otherwise).
     """
     with _clock_lock(lock_clocks):
         tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
@@ -466,111 +515,129 @@ def do_bench_many(
         flops = flops or {}
         bytes = bytes or {}
 
-        if check_interference:
-            _warn_on_interference()
-
-        if cudagraph:
-            # Fail fast before running any of the user's callables.
-            from usv.cudagraph import ensure_available
-
-            ensure_available()
-
-        scratch = _make_scratch(flush_mb) if cache_flush else None
-        before = (lambda: scratch.zero_()) if scratch is not None else None
-
-        # Pre-warmup: discard one (possibly compiling or lazily-initialized) first
-        # call per callable before estimating, warming, or timing anything.
-        for nm in names:
-            fns[nm]()
-        tm.synchronize()
-
-        if cudagraph:
-            # Capture each callable into a CUDA/HIP graph (after pre-warmup, so any
-            # JIT/autotune has run) and time graph replays instead of eager launches.
-            from usv.cudagraph import graph_replay
-
-            fns = {nm: graph_replay(fns[nm]) for nm in names}
-            tm.synchronize()
-
-        # A per-call time estimate is needed to resolve inner="auto" and to turn
-        # min_warmup_time / min_iters_time into per-callable counts.
-        need_est = inner == "auto" or min_warmup_time is not None or min_iters_time is not None
-        est_by = {nm: _estimate_per_call(tm, fns[nm]) for nm in names} if need_est else {}
-
-        if inner == "auto":
-            inner_by = {nm: _inner_for_window(est_by[nm], target_window_s) for nm in names}
-        else:
-            inner_by = {nm: max(1, int(inner)) for nm in names}
-
-        def _counts(min_time: float | None, floor: int) -> dict[str, int]:
-            """Per-callable count: a plain floor, or enough to fill *min_time*."""
-            if min_time is None:
-                return {nm: floor for nm in names}
-            counts: dict[str, int] = {}
-            for nm in names:
-                sample_s = est_by[nm] * inner_by[nm]
-                n = math.ceil(min_time / sample_s) if sample_s > 0 else floor
-                counts[nm] = max(floor, n)
-            return counts
-
-        warmup_by = _counts(min_warmup_time, warmup)
-        iters_by = _counts(min_iters_time, iters)
-
-        # Warmup every callable (per-callable count) before any timing.
-        for nm in names:
-            for _ in range(warmup_by[nm]):
-                fns[nm]()
-        tm.synchronize()
-
         mon = None
-        if monitor:
-            from usv.monitor import GpuMonitor
+        try:
+            with _time_limit(timeout):
+                if check_interference:
+                    _warn_on_interference()
 
-            mon = GpuMonitor(device=monitor_device, interval_s=monitor_interval_s).start()
+                if cudagraph:
+                    # Fail fast before running any of the user's callables.
+                    from usv.cudagraph import ensure_available
 
-        handles: list[tuple[str, object]] = []
-        if interleave:
-            # Dropout round-robin: each round samples every still-active
-            # callable (shuffled); a callable retires once it meets its budget.
-            budget = dict(iters_by)
-            active = [nm for nm in names if budget[nm] > 0]
-            rng = random.Random(0)
-            while active:
-                order = active[:]
-                if len(order) > 1:
-                    rng.shuffle(order)
-                for nm in order:
-                    handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
-                    budget[nm] -= 1
-                active = [nm for nm in active if budget[nm] > 0]
-        else:
-            for nm in names:
-                for _ in range(iters_by[nm]):
-                    handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
+                    ensure_available()
 
-        tm.synchronize()
+                scratch = _make_scratch(flush_mb) if cache_flush else None
+                before = (lambda: scratch.zero_()) if scratch is not None else None
 
-        mon_summary = None
-        if mon is not None:
-            mon.stop()
-            mon_summary = mon.summary()
-            _warn_on_clock_drift(mon_summary)
+                # Pre-warmup: discard one (possibly compiling or lazily-initialized)
+                # first call per callable before estimating, warming, or timing.
+                for nm in names:
+                    fns[nm]()
+                tm.synchronize()
 
-        buckets: dict[str, list[float]] = {nm: [] for nm in names}
-        for nm, handle in handles:
-            buckets[nm].append(tm.value(handle))
+                if cudagraph:
+                    # Capture each callable into a CUDA/HIP graph (after pre-warmup,
+                    # so any JIT/autotune has run) and time replays, not eager launches.
+                    from usv.cudagraph import graph_replay
 
-        result = {
-            nm: Measurement(
-                samples=np.asarray(buckets[nm], dtype=np.float64),
-                name=nm,
-                inner=inner_by[nm],
-                flops=flops.get(nm),
-                bytes=bytes.get(nm),
-                monitor=mon_summary,
-            )
-            for nm in names
-        }
+                    fns = {nm: graph_replay(fns[nm]) for nm in names}
+                    tm.synchronize()
+
+                # A per-call time estimate is needed to resolve inner="auto" and to
+                # turn min_warmup_time / min_iters_time into per-callable counts.
+                need_est = (
+                    inner == "auto"
+                    or min_warmup_time is not None
+                    or min_iters_time is not None
+                )
+                est_by = (
+                    {nm: _estimate_per_call(tm, fns[nm]) for nm in names}
+                    if need_est
+                    else {}
+                )
+
+                if inner == "auto":
+                    inner_by = {
+                        nm: _inner_for_window(est_by[nm], target_window_s) for nm in names
+                    }
+                else:
+                    inner_by = {nm: max(1, int(inner)) for nm in names}
+
+                def _counts(min_time: float | None, floor: int) -> dict[str, int]:
+                    """Per-callable count: a plain floor, or enough to fill *min_time*."""
+                    if min_time is None:
+                        return {nm: floor for nm in names}
+                    counts: dict[str, int] = {}
+                    for nm in names:
+                        sample_s = est_by[nm] * inner_by[nm]
+                        n = math.ceil(min_time / sample_s) if sample_s > 0 else floor
+                        counts[nm] = max(floor, n)
+                    return counts
+
+                warmup_by = _counts(min_warmup_time, warmup)
+                iters_by = _counts(min_iters_time, iters)
+
+                # Warmup every callable (per-callable count) before any timing.
+                for nm in names:
+                    for _ in range(warmup_by[nm]):
+                        fns[nm]()
+                tm.synchronize()
+
+                if monitor:
+                    from usv.monitor import GpuMonitor
+
+                    mon = GpuMonitor(
+                        device=monitor_device, interval_s=monitor_interval_s
+                    ).start()
+
+                handles: list[tuple[str, object]] = []
+                if interleave:
+                    # Dropout round-robin: each round samples every still-active
+                    # callable (shuffled); a callable retires once it meets its budget.
+                    budget = dict(iters_by)
+                    active = [nm for nm in names if budget[nm] > 0]
+                    rng = random.Random(0)
+                    while active:
+                        order = active[:]
+                        if len(order) > 1:
+                            rng.shuffle(order)
+                        for nm in order:
+                            handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
+                            budget[nm] -= 1
+                        active = [nm for nm in active if budget[nm] > 0]
+                else:
+                    for nm in names:
+                        for _ in range(iters_by[nm]):
+                            handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
+
+                tm.synchronize()
+
+                mon_summary = None
+                if mon is not None:
+                    mon.stop()
+                    mon_summary = mon.summary()
+                    _warn_on_clock_drift(mon_summary)
+
+                buckets: dict[str, list[float]] = {nm: [] for nm in names}
+                for nm, handle in handles:
+                    buckets[nm].append(tm.value(handle))
+
+                result = {
+                    nm: Measurement(
+                        samples=np.asarray(buckets[nm], dtype=np.float64),
+                        name=nm,
+                        inner=inner_by[nm],
+                        flops=flops.get(nm),
+                        bytes=bytes.get(nm),
+                        monitor=mon_summary,
+                    )
+                    for nm in names
+                }
+        finally:
+            # Make sure the monitor thread is stopped even if timing timed out.
+            if mon is not None:
+                mon.stop()
 
         if cooldown_s and cooldown_s > 0:
             # Return the GPU to idle before handing back control, so successive

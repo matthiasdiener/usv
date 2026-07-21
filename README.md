@@ -118,6 +118,7 @@ you build the ring yourself.
 | `cudagraph` | `False` | Capture into a CUDA/HIP graph and time replays (no launch overhead). |
 | `cooldown_s` | `0.0` | Idle sleep (s) after timing, to cool the GPU between benchmarks. |
 | `monitor` | `False` | Sample `rocm-smi` during timing; attach summary, warn on clock drift (AMD). |
+| `timeout` | `None` | Abort with `TimeoutError` if timing exceeds this many seconds (GPU hang guard). |
 | `timer` | `"auto"` | `auto` \| `torch` \| `jax` \| `wall`, or a `GPUTimer`. |
 | `name` | `""` | Label for printing. |
 | `flops` / `bytes` | `None` | Per-call work -> `TFLOP/s` / `GB/s` columns. |
