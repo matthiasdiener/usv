@@ -13,6 +13,9 @@ Optional accuracy features:
   contiguous block.
 - **Cache flushing** - zero an L2-sized scratch buffer before each sample to
   measure cold-cache kernel cost.
+- **CUDA/HIP graphs** - capture the callable into a graph and time replays,
+  removing per-launch CPU overhead for very short kernels (opt-in,
+  `cudagraph=True`).
 - **Rotating buffers** - cycle inputs through a ring so back-to-back launches see
   different memory, reducing cache-residency bias without a full flush.
 - **Event-based GPU timing** - per-call `cuda.Event` timing (works on NVIDIA and
@@ -88,6 +91,7 @@ def make_matmul(N, nbuf=8):
 | `cache_flush` | `False` | Zero an L2-sized buffer before each sample. |
 | `flush_mb` | `None` | Flush buffer size in MB; `None` sizes it from the device L2 cache. |
 | `lock_clocks` | `False` | Pin supported GPU clocks for the run (see `fixed_clocks`). |
+| `cudagraph` | `False` | Capture into a CUDA/HIP graph and time replays (no launch overhead). |
 | `timer` | `"auto"` | `auto` \| `torch` \| `wall`, or a `GPUTimer`. |
 | `name` | `""` | Label for printing. |
 | `flops` / `bytes` | `None` | Per-call work -> `TFLOP/s` / `GB/s` columns. |
@@ -137,6 +141,24 @@ automatically - use it only when you need reproducible absolute numbers.
 For a single measurement you can pass it inline instead:
 `do_bench(..., lock_clocks=True)` does the same lock around that one call; use
 the `fixed_clocks()` context manager to lock once around a loop or sweep.
+
+## CUDA/HIP graphs
+
+For very short kernels the Python-side launch cost can dominate the measured
+time. Capturing the work into a CUDA graph (HIP graph on ROCm) and timing
+*replays* removes that per-launch overhead, mirroring
+`triton.testing.do_bench_cudagraphs`:
+
+```python
+from usv import do_bench
+
+m = do_bench(lambda: torch.add(a, a, out=c), cudagraph=True)
+```
+
+The callable must be graph-capturable: static shapes, no host synchronization,
+and it must write into pre-allocated buffers (a fresh allocation per call cannot
+be captured). It is off by default and needs a CUDA/ROCm device. You can also
+capture manually with `usv.graph_replay(fn)`.
 
 ## License
 

@@ -8,6 +8,7 @@ from usv.bench import (
     rotating,
 )
 from usv.clocks import fixed_clocks, gpu_vendor
+from usv.cudagraph import graph_replay
 from usv.results import load_results, save_results, save_samples
 from usv.timer import get_timer
 
@@ -19,6 +20,7 @@ __all__ = [
     "format_table",
     "fixed_clocks",
     "gpu_vendor",
+    "graph_replay",
     "get_timer",
     "save_results",
     "save_samples",

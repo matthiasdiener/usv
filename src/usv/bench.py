@@ -225,6 +225,7 @@ def do_bench(
     cache_flush: bool = False,
     flush_mb: int | None = None,
     lock_clocks: bool = False,
+    cudagraph: bool = False,
     timer: GPUTimer | str = "auto",
     name: str = "",
     flops: float | None = None,
@@ -244,7 +245,10 @@ def do_bench(
     cold-cache cost; ``flush_mb`` sets its size in MB and, when ``None``, is
     taken from the device L2 cache.  ``lock_clocks=True`` pins supported GPU
     clocks for the run; to lock once across many calls, use the
-    :func:`usv.fixed_clocks` context manager instead.
+    :func:`usv.fixed_clocks` context manager instead.  ``cudagraph=True``
+    captures the callable into a CUDA/HIP graph and times replays, removing
+    per-launch CPU overhead (see :func:`usv.cudagraph.graph_replay`); it needs a
+    CUDA/ROCm device and a graph-capturable callable.
 
     This is a thin wrapper over :func:`do_bench_many` (a single-entry group
     with no interleaving), unwrapped to one :class:`Measurement`.
@@ -261,6 +265,7 @@ def do_bench(
         cache_flush=cache_flush,
         flush_mb=flush_mb,
         lock_clocks=lock_clocks,
+        cudagraph=cudagraph,
         timer=timer,
         flops={name: flops} if flops is not None else None,
         bytes={name: bytes} if bytes is not None else None,
@@ -284,6 +289,7 @@ def do_bench_many(
     cache_flush: bool = False,
     flush_mb: int | None = None,
     lock_clocks: bool = False,
+    cudagraph: bool = False,
     timer: GPUTimer | str = "auto",
     flops: dict[str, float] | None = None,
     bytes: dict[str, float] | None = None,
@@ -312,12 +318,22 @@ def do_bench_many(
     ``lock_clocks=True`` pins supported GPU clocks around the whole group (via
     :func:`usv.fixed_clocks`); to lock once across many separate calls, use the
     ``fixed_clocks`` context manager directly.
+
+    ``cudagraph=True`` captures each callable into a CUDA/HIP graph after
+    pre-warmup and times replays, removing per-launch CPU overhead (needs a
+    CUDA/ROCm device and graph-capturable callables).
     """
     with _clock_lock(lock_clocks):
         tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
         names = list(fns)
         flops = flops or {}
         bytes = bytes or {}
+
+        if cudagraph:
+            # Fail fast before running any of the user's callables.
+            from usv.cudagraph import ensure_available
+
+            ensure_available()
 
         scratch = _make_scratch(flush_mb) if cache_flush else None
         before = (lambda: scratch.zero_()) if scratch is not None else None
@@ -327,6 +343,14 @@ def do_bench_many(
         for nm in names:
             fns[nm]()
         tm.synchronize()
+
+        if cudagraph:
+            # Capture each callable into a CUDA/HIP graph (after pre-warmup, so any
+            # JIT/autotune has run) and time graph replays instead of eager launches.
+            from usv.cudagraph import graph_replay
+
+            fns = {nm: graph_replay(fns[nm]) for nm in names}
+            tm.synchronize()
 
         # A per-call time estimate is needed to resolve inner="auto" and to turn
         # min_warmup_time / min_iters_time into per-callable counts.
