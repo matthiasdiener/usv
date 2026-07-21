@@ -209,6 +209,35 @@ m = do_bench(f, timer="jax")
 Install the extra with `pip install -e ".[jax]"`. `"auto"` never selects JAX -
 it is opt-in via `timer="jax"`.
 
+## asv-style benchmark classes
+
+If you already structure benchmarks the [`asv`](https://github.com/airspeed-velocity/asv)
+way - a class with `time_*` methods, `setup` / `teardown`, `setup_cache`, and
+`params` / `param_names` - `usv.run_benchmarks` runs them through the usv timer:
+
+```python
+from usv import run_benchmarks
+
+class MatmulSuite:
+    params = [512, 1024, 2048]
+    param_names = ["n"]
+
+    def setup(self, n):
+        self.a = torch.randn(n, n, device="cuda")
+
+    def time_matmul(self, n):
+        return self.a @ self.a
+
+results = run_benchmarks(MatmulSuite, iters=50)   # {"MatmulSuite.time_matmul(n=512)": Measurement, ...}
+```
+
+`run_benchmarks` accepts a class, an instance, a module (all of its benchmark
+classes), or a `"module:ClassName"` string, and forwards extra keywords
+(`iters`, `warmup`, `timer`, `cache_flush`, ...) to `do_bench`. A flat `params`
+list is one axis; a list of lists is a Cartesian product. `setup_cache` runs
+once and its result is passed as the first argument to `setup` / `teardown` and
+each benchmark.
+
 ## License
 
 MIT

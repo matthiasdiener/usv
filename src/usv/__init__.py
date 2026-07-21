@@ -7,6 +7,7 @@ from usv.bench import (
     format_table,
     rotating,
 )
+from usv.asv import run_benchmarks
 from usv.clocks import fixed_clocks, gpu_vendor
 from usv.cudagraph import graph_replay
 from usv.interference import check_gpu_interference, gpu_processes
@@ -19,6 +20,7 @@ __all__ = [
     "do_bench_many",
     "rotating",
     "format_table",
+    "run_benchmarks",
     "fixed_clocks",
     "gpu_vendor",
     "graph_replay",
