@@ -16,6 +16,8 @@ Optional accuracy features:
 - **CUDA/HIP graphs** - capture the callable into a graph and time replays,
   removing per-launch CPU overhead for very short kernels (opt-in,
   `cudagraph=True`).
+- **Interference detection** - check the vendor SMI for *other* processes on the
+  GPU before trusting a number (opt-in, `check_interference=True`).
 - **Rotating buffers** - cycle inputs through a ring so back-to-back launches see
   different memory, reducing cache-residency bias without a full flush.
 - **Event-based GPU timing** - per-call `cuda.Event` timing (works on NVIDIA and
@@ -159,6 +161,32 @@ The callable must be graph-capturable: static shapes, no host synchronization,
 and it must write into pre-allocated buffers (a fresh allocation per call cannot
 be captured). It is off by default and needs a CUDA/ROCm device. You can also
 capture manually with `usv.graph_replay(fn)`.
+
+## Interference detection
+
+Another process sharing the GPU (a leftover training job, a second benchmark, a
+compositor) quietly biases every measurement. `usv` can check the vendor SMI
+tool for other compute processes on the device and warn before timing:
+
+```python
+from usv import do_bench
+
+m = do_bench(lambda: x @ x, check_interference=True)   # warns if the GPU is shared
+```
+
+Or query it yourself:
+
+```python
+from usv import check_gpu_interference, gpu_processes
+
+print(gpu_processes())               # every compute process on the GPU
+others = check_gpu_interference()    # everything except this process
+if others:
+    raise RuntimeError(f"GPU is busy: {others}")
+```
+
+It is best-effort and read-only: if no SMI tool is available (or its output
+can't be parsed) it returns an empty list rather than failing. Off by default.
 
 ## License
 

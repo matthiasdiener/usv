@@ -17,6 +17,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+import warnings
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -210,6 +211,19 @@ def _clock_lock(lock_clocks: bool):
     return fixed_clocks() if lock_clocks else nullcontext()
 
 
+def _warn_on_interference() -> None:
+    """Warn (best-effort) if another process is running on the GPU."""
+    from usv.interference import check_gpu_interference
+
+    others = check_gpu_interference()
+    if others:
+        who = ", ".join(f"{p['name'] or '?'}(pid {p['pid']})" for p in others)
+        warnings.warn(
+            f"usv: {len(others)} other process(es) on the GPU may skew results: {who}",
+            stacklevel=3,
+        )
+
+
 # single-callable timing
 
 
@@ -226,6 +240,7 @@ def do_bench(
     flush_mb: int | None = None,
     lock_clocks: bool = False,
     cudagraph: bool = False,
+    check_interference: bool = False,
     timer: GPUTimer | str = "auto",
     name: str = "",
     flops: float | None = None,
@@ -248,7 +263,8 @@ def do_bench(
     :func:`usv.fixed_clocks` context manager instead.  ``cudagraph=True``
     captures the callable into a CUDA/HIP graph and times replays, removing
     per-launch CPU overhead (see :func:`usv.cudagraph.graph_replay`); it needs a
-    CUDA/ROCm device and a graph-capturable callable.
+    CUDA/ROCm device and a graph-capturable callable.  ``check_interference=True``
+    warns (once, before timing) if another process is found running on the GPU.
 
     This is a thin wrapper over :func:`do_bench_many` (a single-entry group
     with no interleaving), unwrapped to one :class:`Measurement`.
@@ -266,6 +282,7 @@ def do_bench(
         flush_mb=flush_mb,
         lock_clocks=lock_clocks,
         cudagraph=cudagraph,
+        check_interference=check_interference,
         timer=timer,
         flops={name: flops} if flops is not None else None,
         bytes={name: bytes} if bytes is not None else None,
@@ -290,6 +307,7 @@ def do_bench_many(
     flush_mb: int | None = None,
     lock_clocks: bool = False,
     cudagraph: bool = False,
+    check_interference: bool = False,
     timer: GPUTimer | str = "auto",
     flops: dict[str, float] | None = None,
     bytes: dict[str, float] | None = None,
@@ -322,12 +340,18 @@ def do_bench_many(
     ``cudagraph=True`` captures each callable into a CUDA/HIP graph after
     pre-warmup and times replays, removing per-launch CPU overhead (needs a
     CUDA/ROCm device and graph-capturable callables).
+
+    ``check_interference=True`` queries the vendor SMI tool once before timing
+    and warns if another process is using the GPU (best-effort; off by default).
     """
     with _clock_lock(lock_clocks):
         tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
         names = list(fns)
         flops = flops or {}
         bytes = bytes or {}
+
+        if check_interference:
+            _warn_on_interference()
 
         if cudagraph:
             # Fail fast before running any of the user's callables.

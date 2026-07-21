@@ -9,6 +9,7 @@ from usv.bench import (
 )
 from usv.clocks import fixed_clocks, gpu_vendor
 from usv.cudagraph import graph_replay
+from usv.interference import check_gpu_interference, gpu_processes
 from usv.results import load_results, save_results, save_samples
 from usv.timer import get_timer
 
@@ -21,6 +22,8 @@ __all__ = [
     "fixed_clocks",
     "gpu_vendor",
     "graph_replay",
+    "check_gpu_interference",
+    "gpu_processes",
     "get_timer",
     "save_results",
     "save_samples",
