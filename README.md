@@ -113,6 +113,7 @@ you build the ring yourself.
 | `flush_mb` | `None` | Flush buffer size in MB; `None` sizes it from the device L2 cache. |
 | `lock_clocks` | `False` | Pin supported GPU clocks for the run (see `fixed_clocks`). |
 | `cudagraph` | `False` | Capture into a CUDA/HIP graph and time replays (no launch overhead). |
+| `cooldown_s` | `0.0` | Idle sleep (s) after timing, to cool the GPU between benchmarks. |
 | `timer` | `"auto"` | `auto` \| `torch` \| `jax` \| `wall`, or a `GPUTimer`. |
 | `name` | `""` | Label for printing. |
 | `flops` / `bytes` | `None` | Per-call work -> `TFLOP/s` / `GB/s` columns. |

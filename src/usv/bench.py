@@ -17,6 +17,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+import time
 import warnings
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
@@ -314,6 +315,7 @@ def do_bench(
     lock_clocks: bool = False,
     cudagraph: bool = False,
     check_interference: bool = False,
+    cooldown_s: float = 0.0,
     timer: GPUTimer | str = "auto",
     name: str = "",
     flops: float | None = None,
@@ -338,6 +340,8 @@ def do_bench(
     per-launch CPU overhead (see :func:`usv.cudagraph.graph_replay`); it needs a
     CUDA/ROCm device and a graph-capturable callable.  ``check_interference=True``
     warns (once, before timing) if another process is found running on the GPU.
+    ``cooldown_s`` sleeps that many seconds (GPU idle) after timing, e.g. to let
+    the device return to a cool state between benchmarks in a sweep.
 
     This is a thin wrapper over :func:`do_bench_many` (a single-entry group
     with no interleaving), unwrapped to one :class:`Measurement`.
@@ -356,6 +360,7 @@ def do_bench(
         lock_clocks=lock_clocks,
         cudagraph=cudagraph,
         check_interference=check_interference,
+        cooldown_s=cooldown_s,
         timer=timer,
         flops={name: flops} if flops is not None else None,
         bytes={name: bytes} if bytes is not None else None,
@@ -381,6 +386,7 @@ def do_bench_many(
     lock_clocks: bool = False,
     cudagraph: bool = False,
     check_interference: bool = False,
+    cooldown_s: float = 0.0,
     timer: GPUTimer | str = "auto",
     flops: dict[str, float] | None = None,
     bytes: dict[str, float] | None = None,
@@ -416,6 +422,10 @@ def do_bench_many(
 
     ``check_interference=True`` queries the vendor SMI tool once before timing
     and warns if another process is using the GPU (best-effort; off by default).
+
+    ``cooldown_s`` sleeps that many seconds with the GPU idle after timing, so a
+    loop of calls (e.g. via :func:`usv.run_benchmarks`) leaves the device cool
+    between benchmarks - the CUTLASS-style cool-down counterpart to interleaving.
     """
     with _clock_lock(lock_clocks):
         tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
@@ -505,7 +515,7 @@ def do_bench_many(
         for nm, handle in handles:
             buckets[nm].append(tm.value(handle))
 
-        return {
+        result = {
             nm: Measurement(
                 samples=np.asarray(buckets[nm], dtype=np.float64),
                 name=nm,
@@ -515,6 +525,14 @@ def do_bench_many(
             )
             for nm in names
         }
+
+        if cooldown_s and cooldown_s > 0:
+            # Return the GPU to idle before handing back control, so successive
+            # benchmarks in a sweep don't thermally interfere with each other.
+            tm.synchronize()
+            time.sleep(cooldown_s)
+
+        return result
 
 
 # print table
