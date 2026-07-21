@@ -238,6 +238,22 @@ list is one axis; a list of lists is a Cartesian product. `setup_cache` runs
 once and its result is passed as the first argument to `setup` / `teardown` and
 each benchmark.
 
+### Fresh-process isolation
+
+Passing `fresh_process=True` runs *each* benchmark in its own freshly spawned
+Python process - asv's default methodology. This prevents per-benchmark warmup
+state, allocator fragmentation, and module-level caches from leaking between
+benchmarks:
+
+```python
+results = run_benchmarks("mypkg.benchmarks:MatmulSuite", fresh_process=True, iters=50)
+```
+
+It requires an *importable* target (a `"module:ClassName"` string, or a class
+defined at module scope - not in `__main__` or a local scope) and
+JSON-serializable `do_bench` keywords (e.g. `timer="wall"`, not a `GPUTimer`
+instance). Off by default; the in-process path shares one instance per class.
+
 ## License
 
 MIT

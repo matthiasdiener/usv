@@ -29,8 +29,14 @@ from __future__ import annotations
 
 import importlib
 import itertools
+import json
+import os
+import subprocess
+import sys
 from types import ModuleType
 from typing import TYPE_CHECKING
+
+import numpy as np
 
 from usv.bench import Measurement, do_bench
 
@@ -130,6 +136,113 @@ def _bench_callable(method: "Callable", args: tuple) -> "Callable[[], object]":
     return lambda m=method, a=args: m(*a)
 
 
+def _enumerate_class(cls: type) -> list[tuple[str, int, tuple, list[str]]]:
+    """List ``(method_name, combo_index, combo, param_names)`` for *cls*.
+
+    Deterministic (sorted methods, product order) so a subprocess can select a
+    benchmark by ``(method_name, combo_index)`` without serializing param values.
+    """
+    out = []
+    for method_name in sorted(m for m in dir(cls) if m.startswith("time_")):
+        axes, names = _param_spec(cls, method_name)
+        combos = list(itertools.product(*axes)) if axes else [()]
+        for index, combo in enumerate(combos):
+            out.append((method_name, index, combo, names))
+    return out
+
+
+def _run_single(cls: type, method_name: str, combo: tuple, kwargs: dict) -> Measurement:
+    """Run one benchmark on a *fresh* instance (setup_cache -> setup -> time -> teardown)."""
+    inst = cls()
+    cache_args = (inst.setup_cache(),) if hasattr(inst, "setup_cache") else ()
+    args = cache_args + combo
+    names = _param_spec(cls, method_name)[1]
+    label = _label(cls, method_name, names, combo)
+    _call(inst, "setup", args)
+    try:
+        method = getattr(inst, method_name)
+        return do_bench(_bench_callable(method, args), name=label, **kwargs)
+    finally:
+        _call(inst, "teardown", args)
+
+
+def run_one_by_index(target: str, method_name: str, combo_index: int, kwargs: dict) -> Measurement:
+    """Load *target* and run the single benchmark ``(method_name, combo_index)``.
+
+    Used by the fresh-process worker (:mod:`usv._subproc`).
+    """
+    cls = _load_class(target)
+    for name, index, combo, _names in _enumerate_class(cls):
+        if name == method_name and index == combo_index:
+            return _run_single(cls, method_name, combo, kwargs)
+    raise LookupError(f"no benchmark {method_name!r}[{combo_index}] on {target!r}")
+
+
+def _import_path(cls: type) -> str:
+    """Return a re-importable ``"module:QualName"`` for *cls*, or raise."""
+    mod = getattr(cls, "__module__", None)
+    qual = getattr(cls, "__qualname__", None)
+    if not mod or not qual or mod == "__main__":
+        raise ValueError(
+            f"fresh_process needs an importable benchmark class; {cls!r} is not "
+            "importable (define it in a module, or pass a 'module:ClassName' string)"
+        )
+    path = f"{mod}:{qual}"
+    try:
+        resolved = _load_class(path)
+    except Exception as e:  # pragma: no cover - defensive
+        raise ValueError(f"fresh_process could not re-import {path!r}") from e
+    if resolved is not cls:
+        raise ValueError(f"fresh_process could not re-import {path!r} to the same class")
+    return path
+
+
+def _run_in_subprocess(path: str, method_name: str, combo_index: int, kwargs: dict) -> Measurement:
+    try:
+        payload = json.dumps(
+            {"target": path, "method": method_name, "combo_index": combo_index, "kwargs": kwargs}
+        )
+    except TypeError as e:
+        raise TypeError(
+            "fresh_process requires JSON-serializable do_bench kwargs "
+            "(e.g. timer='wall', not a GPUTimer instance)"
+        ) from e
+
+    # Propagate the parent's import path so the worker can import the same modules.
+    env = os.environ.copy()
+    parent_path = os.pathsep.join(p for p in sys.path if p)
+    if env.get("PYTHONPATH"):
+        env["PYTHONPATH"] = parent_path + os.pathsep + env["PYTHONPATH"]
+    else:
+        env["PYTHONPATH"] = parent_path
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "usv._subproc", payload],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"fresh-process benchmark {method_name!r}[{combo_index}] of {path!r} failed:\n"
+            f"{proc.stderr.strip()}"
+        )
+    try:
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as e:
+        raise RuntimeError(
+            f"fresh-process worker produced no result for {method_name!r}[{combo_index}]:\n"
+            f"{proc.stdout.strip()}"
+        ) from e
+    return Measurement(
+        np.asarray(data["samples"], dtype=np.float64),
+        name=data["name"],
+        inner=data["inner"],
+        flops=data["flops"],
+        bytes=data["bytes"],
+    )
+
+
 def _run_class(cls: type, inst, kwargs: dict) -> dict[str, Measurement]:
     """Run every ``time_*`` method of *cls* over its parameter grid, in process."""
     if inst is None:
@@ -154,7 +267,7 @@ def _run_class(cls: type, inst, kwargs: dict) -> dict[str, Measurement]:
     return results
 
 
-def run_benchmarks(target, **do_bench_kwargs) -> dict[str, Measurement]:
+def run_benchmarks(target, *, fresh_process: bool = False, **do_bench_kwargs) -> dict[str, Measurement]:
     """Discover and run ``asv``-style benchmark classes, returning Measurements.
 
     *target* may be a benchmark class, an instance, a module (all of its
@@ -165,11 +278,31 @@ def run_benchmarks(target, **do_bench_kwargs) -> dict[str, Measurement]:
     each benchmark), and ``params`` / ``param_names`` for sweeps (a flat
     ``params`` list is one axis; a list of lists is a Cartesian product).
 
+    With ``fresh_process=True`` each benchmark runs in its own freshly spawned
+    Python process (asv's default isolation), so per-benchmark warmup state,
+    allocator fragmentation, and module-level caches never leak between
+    benchmarks.  This requires an *importable* target (a ``"module:ClassName"``
+    string, or a class defined at module scope - not in ``__main__`` or a local
+    scope) and JSON-serializable ``do_bench`` keywords (e.g. ``timer='wall'``).
+
     Extra keyword arguments are forwarded to :func:`usv.do_bench` (``warmup``,
     ``iters``, ``timer``, ``cache_flush``, ...).  Benchmarks are named
     ``ClassName.time_method`` with a parameter suffix.
     """
     results: dict[str, Measurement] = {}
     for cls, inst in _resolve(target):
-        results.update(_run_class(cls, inst, do_bench_kwargs))
+        if fresh_process:
+            if inst is not None:
+                raise ValueError(
+                    "fresh_process needs an importable class or 'module:ClassName' "
+                    "string, not a pre-built instance"
+                )
+            path = _import_path(cls)
+            for method_name, combo_index, combo, names in _enumerate_class(cls):
+                label = _label(cls, method_name, names, combo)
+                results[label] = _run_in_subprocess(
+                    path, method_name, combo_index, do_bench_kwargs
+                )
+        else:
+            results.update(_run_class(cls, inst, do_bench_kwargs))
     return results
