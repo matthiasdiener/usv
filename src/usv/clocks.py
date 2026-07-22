@@ -66,7 +66,9 @@ def _run_ok(cmd: list[str]) -> None:
 @contextmanager
 def _amd_fixed(device: int) -> Iterator[None]:
     # Force clocks to maximum with performance level HIGH ("forces clocks to
-    # maximum regardless of workload").
+    # maximum regardless of workload").  For the full set of AMD frequency
+    # and power controls (perf levels, clock/power caps, determinism), see
+    # https://rocm.docs.amd.com/projects/amdsmi/en/develop/conceptual/perf-determinism.html
     amd = shutil.which("amd-smi")
     rocm = None if amd else shutil.which("rocm-smi")
     if amd:
