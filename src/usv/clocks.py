@@ -69,6 +69,10 @@ def _amd_fixed(device: int) -> Iterator[None]:
     # maximum regardless of workload").  For the full set of AMD frequency
     # and power controls (perf levels, clock/power caps, determinism), see
     # https://rocm.docs.amd.com/projects/amdsmi/en/develop/conceptual/perf-determinism.html
+    #
+    # The amdgpu kernel driver exposes these levels directly through the
+    # power_dpm_force_performance_level sysfs file:
+    # https://docs.kernel.org/gpu/amdgpu/thermal.html#gpu-sysfs-power-state-interfaces
     amd = shutil.which("amd-smi")
     rocm = None if amd else shutil.which("rocm-smi")
     if amd:
