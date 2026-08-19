@@ -306,13 +306,14 @@ print(mon.summary())
 Best-effort and read-only: if `rocm-smi` is missing or unparsable, sampling
 yields nothing rather than failing. Off by default; AMD / `rocm-smi` only for now.
 
-## Sources
+## Sources and References
 
 - [`asv` (airspeed velocity)](https://github.com/airspeed-velocity/asv)
 - [`torch.utils.benchmark`](https://docs.pytorch.org/docs/stable/benchmark_utils.html)
 - [`triton.testing.do_bench`](https://triton-lang.org/main/python-api/generated/triton.testing.do_bench.html)
 - [CUTLASS GEMM performance measurement methodology](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/gemm_performance_measurement_methodology_guidelines.html)
 - [hipBLASLt standard benchmarking](https://amd.atlassian.net/wiki/spaces/MLSE/pages/744192648/hipBLASLt+Standard+Benchmarking)
+- [HipKittens benchmarking](https://github.com/HazyResearch/HipKittens/tree/main/analysis/baselines)
 
 ## License
 
