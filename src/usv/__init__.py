@@ -14,7 +14,7 @@ from usv.clocks import fixed_clocks, gpu_vendor
 from usv.cudagraph import graph_replay
 from usv.interference import check_gpu_interference, gpu_processes
 from usv.monitor import GpuMonitor, sample_rocm_smi
-from usv.results import load_results, save_results, save_samples
+from usv.results import find_baseline, load_results, save_results, save_samples
 from usv.timer import get_timer
 
 __all__ = [
@@ -37,4 +37,5 @@ __all__ = [
     "save_results",
     "save_samples",
     "load_results",
+    "find_baseline",
 ]

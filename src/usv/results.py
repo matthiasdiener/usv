@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from usv.bench import Measurement
 
-__all__ = ["save_results", "save_samples", "load_results"]
+__all__ = ["save_results", "save_samples", "load_results", "find_baseline"]
 
 _FIELDS = [
     "name",
@@ -169,3 +169,30 @@ def load_results(path: str) -> list[dict[str, str]]:
     """Load a CSV written by :func:`save_results` into a list of row dicts."""
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
+
+
+def find_baseline(selector: str, *, results_dir: str | None = None) -> str | None:
+    """Resolve a baseline *selector* to a results CSV path (or ``None``).
+
+    *selector* may be an explicit path to a CSV, the special value ``"last"``
+    (the most recent non-sample CSV in *results_dir*), or a label written by
+    :func:`save_results` (the most recent ``*-<label>.csv``).  *results_dir*
+    defaults to ``./results``.
+    """
+    if selector and os.path.isfile(selector):
+        return selector
+    results_dir = results_dir or os.path.join(os.getcwd(), "results")
+    if not os.path.isdir(results_dir):
+        return None
+    csvs = [
+        os.path.join(results_dir, f)
+        for f in os.listdir(results_dir)
+        if f.endswith(".csv") and not f.endswith("-samples.csv")
+    ]
+    if selector and selector != "last":
+        tag = "-" + re.sub(r"[^A-Za-z0-9._-]+", "_", selector).strip("_") + ".csv"
+        csvs = [p for p in csvs if p.endswith(tag)]
+    if not csvs:
+        return None
+    return max(csvs, key=os.path.getmtime)
+
