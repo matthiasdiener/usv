@@ -14,10 +14,12 @@ time a plain callable and get statistics back.  Two entry points:
 
 from __future__ import annotations
 
+import gc
 import itertools
 import math
 import random
 import signal
+import sys
 import threading
 import time
 import warnings
@@ -34,6 +36,7 @@ __all__ = [
     "Measurement",
     "do_bench",
     "do_bench_many",
+    "do_bench_backward",
     "rotating",
     "rotating_buffers",
     "rotation_count",
@@ -317,6 +320,18 @@ def _warn_on_clock_drift(summary: dict | None, tol: float = 0.05) -> None:
 
 
 @contextmanager
+def _gc_disabled():
+    """Keep Python's garbage collector from running while samples are taken."""
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if enabled:
+            gc.enable()
+
+
+@contextmanager
 def _time_limit(seconds: float | None):
     """Abort the block with ``TimeoutError`` if it runs longer than *seconds*.
 
@@ -592,26 +607,27 @@ def do_bench_many(
                     ).start()
 
                 handles: list[tuple[str, object]] = []
-                if interleave:
-                    # Dropout round-robin: each round samples every still-active
-                    # callable (shuffled); a callable retires once it meets its budget.
-                    budget = dict(iters_by)
-                    active = [nm for nm in names if budget[nm] > 0]
-                    rng = random.Random(0)
-                    while active:
-                        order = active[:]
-                        if len(order) > 1:
-                            rng.shuffle(order)
-                        for nm in order:
-                            handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
-                            budget[nm] -= 1
-                        active = [nm for nm in active if budget[nm] > 0]
-                else:
-                    for nm in names:
-                        for _ in range(iters_by[nm]):
-                            handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
+                with _gc_disabled():
+                    if interleave:
+                        # Dropout round-robin: each round samples every still-active
+                        # callable (shuffled); a callable retires once it meets its budget.
+                        budget = dict(iters_by)
+                        active = [nm for nm in names if budget[nm] > 0]
+                        rng = random.Random(0)
+                        while active:
+                            order = active[:]
+                            if len(order) > 1:
+                                rng.shuffle(order)
+                            for nm in order:
+                                handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
+                                budget[nm] -= 1
+                            active = [nm for nm in active if budget[nm] > 0]
+                    else:
+                        for nm in names:
+                            for _ in range(iters_by[nm]):
+                                handles.append((nm, tm.open(fns[nm], inner_by[nm], before)))
 
-                tm.synchronize()
+                    tm.synchronize()
 
                 mon_summary = None
                 if mon is not None:
@@ -646,6 +662,81 @@ def do_bench_many(
             time.sleep(cooldown_s)
 
         return result
+
+
+# backward (autograd) timing
+
+_BWD_BLOCK_CALLS = 20
+
+
+def _bwd_block_calls(fwd: Callable[[], object], max_block_bytes: int) -> int:
+    """Forwards per block: up to 20, fewer if their saved state would exceed the cap."""
+    torch = sys.modules.get("torch")
+    if torch is None or not torch.cuda.is_available():
+        fwd()
+        return _BWD_BLOCK_CALLS
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_allocated()
+    out = fwd()
+    graph_bytes = torch.cuda.memory_allocated() - before
+    del out
+    return max(2, min(_BWD_BLOCK_CALLS, max_block_bytes // max(graph_bytes, 1)))
+
+
+def do_bench_backward(
+    fwd: Callable[[], object],
+    bwd: Callable[[object], object],
+    *,
+    block_calls: int | None = None,
+    max_block_bytes: int = 16 * 1024**3,
+    min_blocks: int = 15,
+    min_time: float = 0.2,
+    warmup_blocks: int = 1,
+    timeout: float | None = None,
+    timer: GPUTimer | str = "auto",
+    name: str = "",
+    flops: float | None = None,
+    bytes: float | None = None,
+) -> Measurement:
+    """Time the backward pass of *fwd*, returning a :class:`Measurement`.
+
+    *bwd* takes one result of *fwd*, runs its backward and clears the gradients it
+    produced (e.g. ``lambda out: out.sum().backward()`` plus resetting ``.grad``).
+    Each block runs *block_calls* forwards untimed, then times their backwards back to
+    back as one sample (per call), so the host runs ahead of the GPU as it does in
+    forward timing and nothing is subtracted.  Unless given, *block_calls* is up to 20,
+    fewer if the forwards' saved state would exceed *max_block_bytes*.  The first
+    *warmup_blocks* blocks are discarded; timing stops after at least *min_blocks*
+    blocks and *min_time* seconds of backward time.  GC is off while timing.
+
+    This avoids deriving backward as ``(fwd+bwd) - fwd``, whose median is stable but
+    whose individual runs show occasional large outliers, and repeating one backward
+    with ``retain_graph``, which many modules don't support.
+    """
+    tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
+    samples: list[float] = []
+    with _time_limit(timeout):
+        n = block_calls or _bwd_block_calls(fwd, max_block_bytes)
+        for block in itertools.count():
+            outs = [fwd() for _ in range(n)]
+            tm.synchronize()
+            nxt = iter(outs).__next__
+            with _gc_disabled():
+                handle = tm.open(lambda nxt=nxt: bwd(nxt()), n)
+                tm.synchronize()
+            del outs, nxt
+            if block < warmup_blocks:
+                continue
+            samples.append(tm.value(handle))
+            if len(samples) >= min_blocks and sum(samples) * n >= min_time:
+                break
+    return Measurement(
+        samples=np.asarray(samples, dtype=np.float64),
+        name=name,
+        inner=n,
+        flops=flops,
+        bytes=bytes,
+    )
 
 
 # print table

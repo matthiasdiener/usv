@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24",
+    "pytest>=7.0",
     "torch>=2.0",
 ]
 
@@ -31,7 +32,6 @@ Issues = "https://github.com/matthiasdiener/usv/issues"
 usv = "usv.pytest_plugin"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
 jax = ["jax>=0.4"]
 
 [tool.setuptools.packages.find]

@@ -16,6 +16,7 @@ leaking between benchmarks.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 
@@ -26,6 +27,20 @@ def main(argv: "list[str] | None" = None) -> int:
         return 2
 
     from usv.asv import run_one_by_index
+
+    # The parent pinned CPUs (inherited) and leaves moving the GPU runtime's helper
+    # threads to each child, since they only exist after the child's GPU init.
+    helpers = os.environ.get("USV_PIN_HELPERS")
+    if helpers:
+        try:
+            import torch
+
+            torch.cuda.init()
+        except Exception:
+            pass
+        from usv.cpupin import move_helper_threads, parse_cpulist
+
+        move_helper_threads(parse_cpulist(helpers))
 
     spec = json.loads(argv[0])
     m = run_one_by_index(

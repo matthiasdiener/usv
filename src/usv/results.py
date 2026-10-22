@@ -114,7 +114,7 @@ def save_results(
     items = _as_list(measurements)
     path = _resolve_path(path, results_dir, label, "")
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=_FIELDS, lineterminator="\n")
         writer.writeheader()
         for m in items:
             writer.writerow(_row(m))
@@ -148,7 +148,7 @@ def save_samples(
     items = _as_list(measurements)
     path = _resolve_path(path, results_dir, label, "-samples")
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_SAMPLE_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=_SAMPLE_FIELDS, lineterminator="\n")
         writer.writeheader()
         for m in items:
             for i, sample_s in enumerate(m.samples):
