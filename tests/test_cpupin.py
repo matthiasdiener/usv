@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -60,23 +61,40 @@ def test_visible_gpu_index(monkeypatch):
     assert cpupin.visible_gpu_index() == 3
 
 
+def test_cpu_group_disjoint_per_gpu():
+    cores = list(range(8))
+    assert cpupin.cpu_group(cores, 4, 0) == [4, 5, 6, 7]
+    assert cpupin.cpu_group(cores, 4, 1) == [0, 1, 2, 3]
+    assert cpupin.cpu_group(cores, 4, 2) == [4, 5, 6, 7]  # more GPUs than groups: reuse
+    assert cpupin.cpu_group([0, 1], 4, 0) == [0, 1]  # fewer cores than requested
+
+
 @pytest.mark.skipif(not set(range(8)) <= os.sched_getaffinity(0), reason="needs CPUs 0-7")
 def test_pin_sets_and_restores(sysfs):
     before = os.sched_getaffinity(0)
     pin = cpupin.pin_cpus(2, pci=PCI, gpu_index=0)
+    stop = threading.Event()
+    late = threading.Thread(target=stop.wait)
     try:
-        # Offset by GPU 0: cores [0,1,2,3] -> start 2 -> cpus 2,3, helpers their siblings.
+        # GPU 0 gets the second group of 2 of the cores [0,1,2,3]; helpers their siblings.
         assert pin.cpus == [2, 3]
         assert pin.helpers == [6, 7]
         assert os.sched_getaffinity(0) == {2, 3}
+        late.start()  # created while pinned: inherits {2, 3}
+        assert os.sched_getaffinity(late.native_id) == {2, 3}
         assert (sysfs / "policy2" / "scaling_governor").read_text() == "performance"
         assert (sysfs / "policy3" / "scaling_governor").read_text() == "performance"
         assert (sysfs / "policy01" / "scaling_governor").read_text() == "schedutil\n"
         assert "performance governor" in pin.description
     finally:
         pin.restore()
-    assert os.sched_getaffinity(0) == before
-    assert (sysfs / "policy2" / "scaling_governor").read_text() == "schedutil"
+    try:
+        assert os.sched_getaffinity(0) == before
+        assert os.sched_getaffinity(late.native_id) == before
+        assert (sysfs / "policy2" / "scaling_governor").read_text() == "schedutil"
+    finally:
+        stop.set()
+        late.join()
     pin.restore()  # idempotent
 
 

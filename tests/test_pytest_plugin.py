@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 # The plugin is installed via its pytest11 entry point, so inner pytester
 # sessions autoload it automatically -- no explicit registration needed.
 _BENCH = '''
@@ -198,10 +200,30 @@ def test_cpu_pinning_applied_at_first_benchmark(pytester):
 import os
 
 def test_zz_affinity():
-    print("AFFINITY", len(os.sched_getaffinity(0)))
+    print("AFFINITY", ",".join(map(str, sorted(os.sched_getaffinity(0)))))
 '''
     )
     result = pytester.runpytest_subprocess("--benchmark-gpu-interference=off", "-s")
     result.assert_outcomes(passed=2)
-    result.stdout.fnmatch_lines(["*usv: main thread pinned to cpus*", "*AFFINITY 4*"])
+    out = result.stdout.str()
+    # The number of cores depends on the host (2 on GitHub's 4-vCPU runners).
+    pinned = re.search(r"usv: main thread pinned to cpus (\d+(?:,\d+)*)", out).group(1)
+    assert f"AFFINITY {pinned}" in out
+
+
+_SAME_NAME = '''
+import time
+
+def test_k(usv_benchmark):
+    usv_benchmark(lambda: time.sleep(0.0002), warmup=0, iters=3, timer="wall")
+'''
+
+
+def test_same_name_in_different_files_is_not_pooled(pytester):
+    pytester.makepyfile(test_a=_SAME_NAME, test_b=_SAME_NAME)
+    result = _run(pytester, "--benchmark-save=two")
+    result.assert_outcomes(passed=2)
+    (csv,) = pytester.path.glob("results/*-two.csv")
+    rows = [r.split(",")[:2] for r in csv.read_text().splitlines()[1:]]
+    assert rows == [["test_k", "3"], ["test_k", "3"]]
 

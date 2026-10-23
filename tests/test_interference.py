@@ -78,6 +78,13 @@ def test_idle_amd_gpu_parses_to_empty():
     assert interference._parse_amd_json(out) == []
 
 
+def test_failed_process_query_is_unavailable(monkeypatch):
+    gpus = json.dumps([{"gpu": 0, "bdf": "0000:05:00.0"}])
+    monkeypatch.setattr(interference.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    monkeypatch.setattr(interference, "_run", lambda cmd: gpus if cmd[1] == "list" else None)
+    assert interference.snapshot_gpu_processes(vendor="amd") is None
+
+
 def test_unknown_vendor_returns_empty(monkeypatch):
     monkeypatch.setattr(interference, "gpu_vendor", lambda: None)
     assert interference.gpu_processes(vendor="auto") == []

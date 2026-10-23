@@ -680,7 +680,7 @@ def _bwd_block_calls(fwd: Callable[[], object], max_block_bytes: int) -> int:
     out = fwd()
     graph_bytes = torch.cuda.memory_allocated() - before
     del out
-    return max(2, min(_BWD_BLOCK_CALLS, max_block_bytes // max(graph_bytes, 1)))
+    return max(1, min(_BWD_BLOCK_CALLS, max_block_bytes // max(graph_bytes, 1)))
 
 
 def do_bench_backward(

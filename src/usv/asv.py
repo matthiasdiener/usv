@@ -50,7 +50,18 @@ from usv.bench import Measurement, do_bench
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-__all__ = ["run_benchmarks", "asv_bench_kwargs"]
+__all__ = ["run_benchmarks", "asv_bench_kwargs", "SkipBenchmark"]
+
+
+class SkipBenchmark(Exception):
+    """A benchmark's ``setup`` raised ``NotImplementedError``: skip it, as asv does."""
+
+
+def _setup(inst, args: tuple, label: str) -> None:
+    try:
+        _call(inst, "setup", args)
+    except NotImplementedError as e:
+        raise SkipBenchmark(f"{label}: setup raised NotImplementedError") from e
 
 
 def _load_class(path: str) -> type:
@@ -137,14 +148,23 @@ def _label(cls: type, method_name: str, names: list[str], combo: tuple) -> str:
     return f"{base}({inside})"
 
 
-def _param_ids(names: list[str], combo: tuple) -> list[str]:
-    """pytest-style ids for a parameter combination (values, or ``name<index>``)."""
+def _axis_indices(axes: list[list], combo_index: int) -> list[int]:
+    """Per-axis value indices of combination *combo_index* (``itertools.product`` order)."""
+    out = []
+    for axis in reversed(axes):
+        combo_index, i = divmod(combo_index, len(axis))
+        out.append(i)
+    return out[::-1]
+
+
+def _param_ids(names: list[str], combo: tuple, value_indices: list[int]) -> list[str]:
+    """pytest-style ids for a parameter combination: the value, or ``<name><value index>``."""
     ids = []
     for i, v in enumerate(combo):
         if v is None or isinstance(v, (str, int, float, bool)):
             ids.append(str(v))
         else:
-            ids.append(f"{names[i] if i < len(names) else 'p'}{i}")
+            ids.append(f"{names[i] if i < len(names) else 'p'}{value_indices[i]}")
     return ids
 
 
@@ -234,7 +254,7 @@ def _run_single(cls: type, method_name: str, combo: tuple, kwargs: dict) -> Meas
     names = _param_spec(cls, method_name)[1]
     label = _label(cls, method_name, names, combo)
     kwargs = {**asv_bench_kwargs(cls, method_name), **kwargs}
-    _call(inst, "setup", args)
+    _setup(inst, args, label)
     try:
         method = getattr(inst, method_name)
         return do_bench(_bench_callable(method, args), name=label, **kwargs)
@@ -322,6 +342,8 @@ def _run_in_subprocess(path: str, method_name: str, combo_index: int, kwargs: di
             f"fresh-process worker produced no result for {method_name!r}[{combo_index}]:\n"
             f"{proc.stdout.strip()}"
         ) from e
+    if "skipped" in data:
+        raise SkipBenchmark(data["skipped"])
     return Measurement(
         np.asarray(data["samples"], dtype=np.float64),
         name=data["name"],
@@ -344,9 +366,12 @@ def _run_class(cls: type, inst, kwargs: dict) -> dict[str, Measurement]:
         axes, names = _param_spec(cls, method_name)
         for combo in itertools.product(*axes) if axes else [()]:
             args = cache_args + combo
-            _call(inst, "setup", args)
+            label = _label(cls, method_name, names, combo)
             try:
-                label = _label(cls, method_name, names, combo)
+                _setup(inst, args, label)
+            except SkipBenchmark:
+                continue
+            try:
                 results[label] = do_bench(
                     _bench_callable(method, args),
                     name=label,
@@ -460,17 +485,18 @@ def run_benchmarks(
     (run once; its result is passed as the first argument to setup/teardown and
     each benchmark), ``params`` / ``param_names`` for sweeps (a flat ``params``
     list is one axis; a list of lists is a Cartesian product), and the timing
-    attributes mapped by :func:`asv_bench_kwargs`.
+    attributes mapped by :func:`asv_bench_kwargs`.  A ``setup`` that raises
+    ``NotImplementedError`` skips that benchmark, as in asv.
 
     Classes defined at module scope in a ``.py`` file run through the pytest runner
-    (``pytest --benchmark-asv``): each benchmark gets a fresh instance, a ``setup``
-    that raises ``NotImplementedError`` skips it, and the session options apply:
-    *interleave* (``--benchmark-interleave``: measure each benchmark in that many
-    rounds spread over the run), *cpu_pin* (pin to GPU-local cores at the
-    performance governor, restored afterwards) and *gpu_interference* (``"warn"``,
-    ``"abort"`` or ``"off"``).  *pytest_args* are passed on to pytest.  A pre-built
-    instance, or a class pytest can't collect (in ``__main__`` or a local scope),
-    runs directly instead, sharing one instance per class, without those options.
+    (``pytest --benchmark-asv``): each benchmark gets a fresh instance, and the
+    session options apply: *interleave* (``--benchmark-interleave``: measure each
+    benchmark in that many rounds spread over the run), *cpu_pin* (pin to GPU-local
+    cores at the performance governor, restored afterwards) and *gpu_interference*
+    (``"warn"``, ``"abort"`` or ``"off"``).  *pytest_args* are passed on to pytest,
+    e.g. ``["--benchmark-save=main"]``.  A pre-built instance, or a class pytest can't
+    collect (in ``__main__`` or a local scope), runs directly instead, sharing one
+    instance per class, without those options.
 
     With ``fresh_process=True`` each benchmark runs in its own freshly spawned
     Python process (asv's default isolation), so per-benchmark warmup state,
@@ -499,9 +525,12 @@ def run_benchmarks(
             path = _import_path(cls)
             for method_name, combo_index, combo, names in _enumerate_class(cls):
                 label = _label(cls, method_name, names, combo)
-                results[label] = _run_in_subprocess(
-                    path, method_name, combo_index, do_bench_kwargs
-                )
+                try:
+                    results[label] = _run_in_subprocess(
+                        path, method_name, combo_index, do_bench_kwargs
+                    )
+                except SkipBenchmark:
+                    pass
         else:
             results.update(_run_class(cls, inst, do_bench_kwargs))
     if nodeids:

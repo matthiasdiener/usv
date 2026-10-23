@@ -190,10 +190,13 @@ def _amd_snapshot() -> dict[str, list[dict]] | None:
     amd = shutil.which("amd-smi")
     if not amd:
         return None
+    gpu_out = _run([amd, "list", "--json"])
+    proc_out = _run([amd, "process", "--json"])
+    if gpu_out is None or proc_out is None:
+        return None
     try:
-        gpus = json.loads(_run([amd, "list", "--json"]) or "null")
-        bdfs = {e["gpu"]: _norm_bdf(e["bdf"]) for e in gpus}
-        entries = json.loads(_run([amd, "process", "--json"]) or "null")
+        bdfs = {e["gpu"]: _norm_bdf(e["bdf"]) for e in json.loads(gpu_out)}
+        entries = json.loads(proc_out)
     except Exception:
         return None
     snap: dict[str, list[dict]] = {bdf: [] for bdf in bdfs.values()}

@@ -30,7 +30,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-__all__ = ["CpuPin", "pin_cpus", "pinned_cpus", "gpu_local_cores", "move_helper_threads"]
+__all__ = [
+    "CpuPin",
+    "pin_cpus",
+    "pinned_cpus",
+    "cpu_group",
+    "gpu_local_cores",
+    "move_helper_threads",
+]
 
 DEFAULT_NCPUS = 4
 _CPU_SYSFS = Path("/sys/devices/system/cpu")
@@ -143,6 +150,16 @@ def _set_governor(cpus) -> tuple[dict[Path, str], OSError | None]:
     return previous, error
 
 
+def cpu_group(cores: list[int], ncpus: int, gpu: int) -> list[int]:
+    """The *ncpus* cores for GPU *gpu*: whole groups, so GPUs get disjoint cores while
+    there are enough.  Group 0 (often busy with OS work) is used last."""
+    groups = len(cores) // ncpus
+    if groups < 1:
+        return list(cores)
+    start = ncpus * ((gpu + 1) % groups)
+    return cores[start : start + ncpus]
+
+
 def pin_cpus(
     ncpus: int = DEFAULT_NCPUS,
     *,
@@ -157,8 +174,8 @@ def pin_cpus(
     torch's ``cuda:0``, which initializes the GPU runtime.  Initialize it before
     calling (as the default does) so the runtime's helper threads exist and can be
     moved; ``move_helpers=False`` leaves them alone (e.g. in a parent process whose
-    children move their own).  *gpu_index* (default: the first visible GPU) offsets
-    the cores so concurrent runs on other GPUs don't share them.
+    children move their own).  *gpu_index* (default: the first visible GPU) selects a
+    different group of cores per GPU, so concurrent runs on other GPUs don't share them.
     """
     if pci is None:
         from usv.sysinfo import gpu_pci
@@ -167,8 +184,7 @@ def pin_cpus(
     allowed = set(os.sched_getaffinity(0))
     cores = gpu_local_cores(pci, allowed)
     gpu = visible_gpu_index() if gpu_index is None else gpu_index
-    start = ncpus * (gpu + 1) % max(len(cores) - ncpus + 1, 1)
-    cpus = cores[start : start + ncpus] or cores
+    cpus = cpu_group(cores, ncpus, gpu)
     siblings: set[int] = set()
     for cpu in cpus:
         siblings |= _siblings(cpu)
@@ -211,6 +227,14 @@ def pin_cpus(
             try:
                 os.sched_setaffinity(tid, mask)
             except OSError:
+                pass
+        # Threads created while pinned inherited a pinned mask; leave other masks alone.
+        pinned_masks = (set(cpus), set(helpers) if move_helpers else set(cpus))
+        for tid in map(int, os.listdir("/proc/self/task")):
+            try:
+                if tid not in old_affinity and os.sched_getaffinity(tid) in pinned_masks:
+                    os.sched_setaffinity(tid, old_affinity[me])
+            except (OSError, KeyError):
                 pass
 
     if not governor:

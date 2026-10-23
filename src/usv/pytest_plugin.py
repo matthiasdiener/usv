@@ -55,6 +55,7 @@ import math
 import os
 import random
 import sys
+from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -72,13 +73,17 @@ from usv import (
     save_results,
 )
 from usv.asv import (
+    SkipBenchmark,
+    _axis_indices,
     _bench_callable,
     _call,
     _enumerate_class,
     _import_path,
     _label,
     _param_ids,
+    _param_spec,
     _run_in_subprocess,
+    _setup,
     asv_bench_kwargs,
     is_asv_class,
 )
@@ -125,15 +130,19 @@ def _strip_round(name: str, rnd: int | None) -> str:
 class _Store:
     """Session-wide collector of recorded Measurements.
 
-    Measurements with the same name (one per interleave round) are pooled into one.
+    The interleave rounds of one benchmark (same *key*: the test id without its round,
+    plus the measurement name) are pooled into one; without a key nothing is pooled.
     """
 
     def __init__(self) -> None:
         self.measurements: list[Measurement] = []
-        self._by_name: dict[str, Measurement] = {}
+        self._pooled: dict[tuple, Measurement] = {}
 
-    def add(self, m: Measurement) -> None:
-        pooled = self._by_name.get(m.name)
+    def add(self, m: Measurement, key: tuple | None = None) -> None:
+        if key is None:
+            self.measurements.append(m)
+            return
+        pooled = self._pooled.get(key)
         if pooled is None:
             pooled = Measurement(
                 samples=m.samples.copy(),
@@ -143,7 +152,7 @@ class _Store:
                 bytes=m.bytes,
                 monitor=m.monitor,
             )
-            self._by_name[m.name] = pooled
+            self._pooled[key] = pooled
             self.measurements.append(pooled)
         else:
             pooled.samples = np.concatenate([pooled.samples, m.samples])
@@ -166,7 +175,10 @@ class _Bench:
         return _strip_round(self._request.node.name, self._round)
 
     def _record(self, m: Measurement) -> Measurement:
-        self._store.add(m)
+        key = None
+        if self._round is not None:
+            key = (_strip_round(self._request.node.nodeid, self._round), m.name)
+        self._store.add(m, key)
         return m
 
     def _kw(self, kwargs: dict, timer) -> dict:
@@ -181,7 +193,7 @@ class _Bench:
         """Time a group of callables together (interleaved by default)."""
         res = do_bench_many(fns, interleave=interleave, **self._kw(kwargs, timer))
         for m in res.values():
-            self._store.add(m)
+            self._record(m)
         return res
 
     def backward(self, fwd, bwd, *, name=None, timer=None, **kwargs) -> Measurement:
@@ -235,11 +247,21 @@ class AsvClass(pytest.Collector):
 
     def collect(self):
         rounds = self.config.getoption("--benchmark-interleave")
-        items = []
+        cases = []
         for method, index, combo, names in _enumerate_class(self.obj):
-            ids = _param_ids(names, combo)
+            axes = _param_spec(self.obj, method)[0]
+            ids = "-".join(_param_ids(names, combo, _axis_indices(axes, index)))
+            cases.append((method, index, combo, names, ids))
+        # Equal ids (e.g. values 1 and "1") get a counter, as pytest does.
+        counts = Counter((method, ids) for method, _, _, _, ids in cases)
+        seen: Counter = Counter()
+        items = []
+        for method, index, combo, names, ids in cases:
+            if counts[method, ids] > 1:
+                seen[method, ids] += 1
+                ids = f"{ids}_{seen[method, ids] - 1}"
             for rnd in range(1, rounds + 1) if rounds > 1 else [None]:
-                parts = ids + ([f"r{rnd}"] if rnd is not None else [])
+                parts = [p for p in (ids, f"r{rnd}" if rnd is not None else "") if p]
                 items.append(
                     AsvItem.from_parent(
                         self,
@@ -281,21 +303,22 @@ class AsvItem(pytest.Item):
         if hasattr(self, "_usv_round"):
             kwargs = _scale_for_rounds(kwargs, config.getoption("--benchmark-interleave"))
         label = _label(cls, self.method, self.param_names, self.combo)
-        if config.getoption("--benchmark-fresh-process"):
-            m = _run_in_subprocess(_import_path(cls), self.method, self.combo_index, kwargs)
-        else:
-            args = self.parent.cache_args() + self.combo
-            inst = cls()
-            try:
-                _call(inst, "setup", args)
-            except NotImplementedError:
-                pytest.skip(f"{label}: setup raised NotImplementedError")
-            try:
-                method = getattr(inst, self.method)
-                m = do_bench(_bench_callable(method, args), name=label, **kwargs)
-            finally:
-                _call(inst, "teardown", args)
-        config._usv_store.add(m)
+        try:
+            if config.getoption("--benchmark-fresh-process"):
+                m = _run_in_subprocess(_import_path(cls), self.method, self.combo_index, kwargs)
+            else:
+                args = self.parent.cache_args() + self.combo
+                inst = cls()
+                _setup(inst, args, label)
+                try:
+                    method = getattr(inst, self.method)
+                    m = do_bench(_bench_callable(method, args), name=label, **kwargs)
+                finally:
+                    _call(inst, "teardown", args)
+        except SkipBenchmark as e:
+            pytest.skip(str(e))
+        rnd = getattr(self, "_usv_round", None)
+        config._usv_store.add(m, rnd and (_strip_round(self.nodeid, rnd), m.name))
 
     def reportinfo(self):
         return self.path, None, f"{self.parent.obj.__name__}.{self.name}"
@@ -722,14 +745,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     tr.write_sep("-", "usv benchmarks")
     tr.write_line(format_table(store.measurements))
     save = config.getoption("--benchmark-save")
-    if save:
-        path = save_results(
-            store.measurements, label=save if isinstance(save, str) else None
-        )
+    path = getattr(config, "_usv_saved_path", None)
+    if save and path:
         tr.write_line(f"saved {len(store.measurements)} result(s) -> {path}")
-        from usv.sysinfo import write_run_info
-
-        write_run_info(os.path.splitext(path)[0] + "-info.txt", _run_info(config))
     selector = config.getoption("--benchmark-compare")
     if not selector:
         return
@@ -747,18 +765,30 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
-    """Undo the CPU pinning; fail the session (non-zero exit) if any benchmark regressed."""
+    """Undo the CPU pinning, save results, and fail the session if a benchmark regressed.
+
+    Saving happens here rather than in the terminal summary, so it also works without
+    the terminal plugin (as in :func:`usv.run_benchmarks`).
+    """
     config = session.config
     st = getattr(config, "_usv_session", None)
     if st is not None and st.pin is not None:
         st.pin.restore()
         st.pin = None
         os.environ.pop("USV_PIN_HELPERS", None)
-    if not getattr(config, "_usv_store", None) or not config.getoption(
-        "--benchmark-compare"
-    ):
+    store = getattr(config, "_usv_store", None)
+    if not store or not store.measurements:
         return
-    cmps = _ensure_comparison(config)
+    compare = config.getoption("--benchmark-compare")
+    # Resolve the baseline before saving, so "last" can't pick this run's own file.
+    cmps = _ensure_comparison(config) if compare else []
+    save = config.getoption("--benchmark-save")
+    if save:
+        from usv.sysinfo import write_run_info
+
+        path = save_results(store.measurements, label=save if isinstance(save, str) else None)
+        write_run_info(os.path.splitext(path)[0] + "-info.txt", _run_info(config))
+        config._usv_saved_path = path
     if any(c.regressed for c in cmps) and session.exitstatus == 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 

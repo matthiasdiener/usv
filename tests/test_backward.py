@@ -21,10 +21,29 @@ def test_runs_until_min_time():
     m = do_bench_backward(
         lambda: None, lambda out: time.sleep(0.002), block_calls=2, min_blocks=1, min_time=0.02, timer="wall"
     )
-    assert m.n >= 5  # 0.02 s / (2 calls x 2 ms)
-    assert 0.0015 < m.median < 0.02
+    total = m.samples.sum() * m.inner
+    assert total >= 0.02
+    assert total - m.samples[-1] * m.inner < 0.02  # stopped at the first block that reached it
+    assert m.min >= 0.002
 
 
 def test_default_block_size():
     m = do_bench_backward(lambda: None, lambda out: None, min_blocks=2, min_time=0.0, timer="wall")
     assert m.inner == 20
+
+
+def test_block_size_falls_to_one_forward(monkeypatch):
+    import sys
+    import types
+
+    import usv.bench as bench
+
+    allocated = iter([0, 12 * 1024**3])
+    cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        synchronize=lambda: None,
+        memory_allocated=lambda: next(allocated),
+    )
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda=cuda))
+    # A 12 GiB forward under the 16 GiB cap: one forward per block, not two.
+    assert bench._bwd_block_calls(lambda: None, 16 * 1024**3) == 1

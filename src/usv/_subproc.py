@@ -26,7 +26,7 @@ def main(argv: "list[str] | None" = None) -> int:
         print("usage: python -m usv._subproc <json-payload>", file=sys.stderr)
         return 2
 
-    from usv.asv import run_one_by_index
+    from usv.asv import SkipBenchmark, run_one_by_index
 
     # The parent pinned CPUs (inherited) and leaves moving the GPU runtime's helper
     # threads to each child, since they only exist after the child's GPU init.
@@ -43,9 +43,14 @@ def main(argv: "list[str] | None" = None) -> int:
         move_helper_threads(parse_cpulist(helpers))
 
     spec = json.loads(argv[0])
-    m = run_one_by_index(
-        spec["target"], spec["method"], spec["combo_index"], spec.get("kwargs", {})
-    )
+    try:
+        m = run_one_by_index(
+            spec["target"], spec["method"], spec["combo_index"], spec.get("kwargs", {})
+        )
+    except SkipBenchmark as e:
+        json.dump({"skipped": str(e)}, sys.stdout)
+        sys.stdout.write("\n")
+        return 0
     json.dump(
         {
             "name": m.name,

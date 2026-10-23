@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from usv import run_benchmarks
-from usv.asv import _axes, _label, _param_ids, asv_bench_kwargs
+from usv.asv import _axes, _axis_indices, _label, _param_ids, asv_bench_kwargs
 
 
 class _Suite:
@@ -111,8 +111,40 @@ def test_attributes_apply_and_explicit_kwargs_win():
 
 
 def test_param_ids():
-    assert _param_ids(["n", "dtype"], (1024, "bf16")) == ["1024", "bf16"]
-    assert _param_ids(["shape"], ((1, 2),)) == ["shape0"]
+    assert _param_ids(["n", "dtype"], (1024, "bf16"), [0, 0]) == ["1024", "bf16"]
+    assert _param_ids(["shape"], ((4, 8),), [1]) == ["shape1"]
+    axes = [[1, 2], ["a", "b", "c"]]
+    assert [_axis_indices(axes, i) for i in range(6)] == [
+        [0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2],
+    ]
+
+
+class _Unsupported:
+    params = [2, 3]
+
+    def setup(self, n):
+        if n == 3:
+            raise NotImplementedError
+
+    def time_x(self, n):
+        pass
+
+
+def test_setup_not_implemented_skips_in_direct_run():
+    res = run_benchmarks(_Unsupported(), warmup=0, iters=1, timer="wall")
+    assert set(res) == {"_Unsupported.time_x(2)"}
+
+
+def test_setup_not_implemented_skips_via_pytest():
+    res = run_benchmarks(_Unsupported, warmup=0, iters=1, timer="wall")
+    assert set(res) == {"_Unsupported.time_x(2)"}
+
+
+def test_run_benchmarks_saves_without_terminal(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_benchmarks(_Suite, warmup=0, iters=1, timer="wall", pytest_args=["--benchmark-save=run"])
+    assert list((tmp_path / "results").glob("*-run.csv"))
+    assert list((tmp_path / "results").glob("*-run-info.txt"))
 
 
 def test_interleave_pools_rounds():
@@ -182,3 +214,28 @@ def test_asv_interleave_rounds(pytester):
     )
     result.assert_outcomes(passed=4, skipped=3)  # 2 asv items x 3 rounds + test_it
     result.stdout.fnmatch_lines(["*time_square?2-a-r1? PASSED*", "*time_square?2-a-r3? PASSED*"])
+
+
+_IDS_FILE = '''
+class Shapes:
+    params = [[(1, 2), (4, 8)], [1, "1"]]
+    param_names = ["shape", "k"]
+
+    def time_x(self, shape, k):
+        pass
+'''
+
+
+def test_asv_item_ids_are_unique(pytester):
+    pytester.makepyfile(bench_ids=_IDS_FILE)
+    result = pytester.runpytest_subprocess(*_QUIET, "--benchmark-asv", "--collect-only", "-q")
+    ids = [line.split("::")[-1] for line in result.stdout.lines if "::" in line]
+    assert ids == ["time_x[shape0-1_0]", "time_x[shape0-1_1]", "time_x[shape1-1_0]", "time_x[shape1-1_1]"]
+
+
+def test_fresh_process_propagates_setup_skip(pytester):
+    pytester.makepyfile(bench_suite=_SUITE_FILE)
+    result = pytester.runpytest_subprocess(
+        *_QUIET, "--benchmark-asv", "--benchmark-fresh-process", "-k", "time_square"
+    )
+    result.assert_outcomes(passed=1, skipped=1)
