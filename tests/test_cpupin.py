@@ -76,26 +76,41 @@ def test_pin_sets_and_restores(sysfs):
     stop = threading.Event()
     late = threading.Thread(target=stop.wait)
     try:
-        # GPU 0 gets the second group of 2 of the cores [0,1,2,3]; helpers their siblings.
-        assert pin.cpus == [2, 3]
-        assert pin.helpers == [6, 7]
-        assert os.sched_getaffinity(0) == {2, 3}
-        late.start()  # created while pinned: inherits {2, 3}
-        assert os.sched_getaffinity(late.native_id) == {2, 3}
-        assert (sysfs / "policy2" / "scaling_governor").read_text() == "performance"
-        assert (sysfs / "policy3" / "scaling_governor").read_text() == "performance"
-        assert (sysfs / "policy01" / "scaling_governor").read_text() == "schedutil\n"
-        assert "performance governor" in pin.description
-    finally:
-        pin.restore()
-    try:
+        try:
+            # GPU 0 gets the second group of 2 of the cores [0,1,2,3]; helpers their siblings.
+            assert pin.cpus == [2, 3]
+            assert pin.helpers == [6, 7]
+            assert os.sched_getaffinity(0) == {2, 3}
+            late.start()  # created while pinned: inherits {2, 3}
+            assert os.sched_getaffinity(late.native_id) == {2, 3}
+            assert (sysfs / "policy2" / "scaling_governor").read_text() == "performance"
+            assert (sysfs / "policy3" / "scaling_governor").read_text() == "performance"
+            assert (sysfs / "policy01" / "scaling_governor").read_text() == "schedutil\n"
+            assert "performance governor" in pin.description
+        finally:
+            pin.restore()
         assert os.sched_getaffinity(0) == before
         assert os.sched_getaffinity(late.native_id) == before
         assert (sysfs / "policy2" / "scaling_governor").read_text() == "schedutil"
     finally:
         stop.set()
-        late.join()
+        if late.ident is not None:
+            late.join()
     pin.restore()  # idempotent
+
+
+@pytest.mark.skipif(not {0, 1, 2, 3} <= os.sched_getaffinity(0), reason="needs CPUs 0-3")
+def test_guard_spawn_failure_rolls_back(sysfs, monkeypatch):
+    before = os.sched_getaffinity(0)
+
+    def fail(*args, **kwargs):
+        raise OSError("no more processes")
+
+    monkeypatch.setattr(cpupin.subprocess, "Popen", fail)
+    with pytest.raises(OSError, match="no more processes"):
+        cpupin.pin_cpus(2, pci=PCI, gpu_index=0)
+    assert os.sched_getaffinity(0) == before
+    assert (sysfs / "policy2" / "scaling_governor").read_text() == "schedutil"
 
 
 @pytest.mark.skipif(not {0, 1, 2, 3} <= os.sched_getaffinity(0), reason="needs CPUs 0-3")
@@ -128,6 +143,21 @@ def test_governor_guard_leaves_restored_state(tmp_path):
         stdin=subprocess.PIPE,
     )
     guard.communicate(b"restored", timeout=30)
+    assert gov.read_text() == "schedutil"
+
+
+def test_governor_guard_exits_while_pipe_is_shared(tmp_path):
+    gov = tmp_path / "scaling_governor"
+    gov.write_text("schedutil")
+    guard = subprocess.Popen(
+        [sys.executable, "-c", cpupin._GOVERNOR_GUARD, f"{gov}=ondemand"],
+        stdin=subprocess.PIPE,
+    )
+    held = os.dup(guard.stdin.fileno())  # like a forked worker that inherited the pipe
+    try:
+        guard.communicate(b"restored", timeout=30)
+    finally:
+        os.close(held)
     assert gov.read_text() == "schedutil"
 
 

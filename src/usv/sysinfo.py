@@ -14,10 +14,9 @@ __all__ = ["gpu_pci", "probe_gpu", "run_info", "write_run_info"]
 # Prints one JSON line describing cuda:0, in a child process so the caller never
 # initializes the GPU runtime itself.
 _PROBE = r"""
-import json, torch
-p = torch.cuda.get_device_properties(0)
-print(json.dumps({"pci": "%04x:%02x:%02x.0" % (p.pci_domain_id, p.pci_bus_id, p.pci_device_id),
-                  "name": p.name, "arch": getattr(p, "gcnArchName", "") or ""}))
+import json
+from usv.sysinfo import _gpu_props
+print(json.dumps(_gpu_props()))
 """
 
 
@@ -30,22 +29,59 @@ def gpu_pci(index: int = 0) -> str | None:
     return _gpu_props(index).get("pci")
 
 
+def _runtime_pci(torch, index: int) -> str | None:
+    """PCI address of *index* from the CUDA/HIP runtime library torch loaded, or ``None``."""
+    import ctypes
+
+    if torch.version.hip:
+        lib, func = "libamdhip64", "hipDeviceGetPCIBusId"
+    else:
+        lib, func = "libcudart", "cudaDeviceGetPCIBusId"
+    try:
+        with open("/proc/self/maps") as f:
+            paths = {line.split(None, 5)[-1].strip() for line in f if lib in line}
+    except OSError:
+        return None
+    for path in sorted(paths):
+        buf = ctypes.create_string_buffer(64)
+        try:
+            if getattr(ctypes.CDLL(path), func)(buf, len(buf), index) == 0:
+                dom, bus, dev = buf.value.decode().replace(".", ":").split(":")[:3]
+                return "%04x:%02x:%02x.0" % (int(dom, 16), int(bus, 16), int(dev, 16))
+        except (OSError, AttributeError, ValueError):
+            pass
+    return None
+
+
+def _torch_pci(torch, index: int = 0) -> str | None:
+    """PCI address of torch's ``cuda:index``, or ``None``; initializes the GPU runtime."""
+    p = torch.cuda.get_device_properties(index)
+    if hasattr(p, "pci_bus_id"):
+        return "%04x:%02x:%02x.0" % (p.pci_domain_id, p.pci_bus_id, p.pci_device_id)
+    return _runtime_pci(torch, index)  # torch < 2.8 has no PCI device properties
+
+
 def _gpu_props(index: int = 0) -> dict:
     try:
         import torch
 
         p = torch.cuda.get_device_properties(index)
-        return {
-            "pci": "%04x:%02x:%02x.0" % (p.pci_domain_id, p.pci_bus_id, p.pci_device_id),
-            "name": p.name,
-            "arch": getattr(p, "gcnArchName", "") or "",
-        }
     except Exception:
         return {}
+    props = {"name": p.name, "arch": getattr(p, "gcnArchName", "") or ""}
+    try:
+        pci = _torch_pci(torch, index)
+    except Exception:
+        pci = None
+    if pci:
+        props["pci"] = pci
+    return props
 
 
 def probe_gpu(timeout: float = 120.0) -> dict:
     """``{"pci", "name", "arch"}`` of ``cuda:0`` from a short-lived child process.
+
+    ``"pci"`` is missing if the PCI address can't be determined.
 
     For callers that must not initialize the GPU runtime themselves (e.g. a parent
     spawning fresh benchmark processes).  Returns ``{}`` if the probe fails.

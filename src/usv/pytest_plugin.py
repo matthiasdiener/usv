@@ -252,14 +252,18 @@ class AsvClass(pytest.Collector):
             axes = _param_spec(self.obj, method)[0]
             ids = "-".join(_param_ids(names, combo, _axis_indices(axes, index)))
             cases.append((method, index, combo, names, ids))
-        # Equal ids (e.g. values 1 and "1") get a counter, as pytest does.
+        # Equal ids (e.g. values 1 and "1") get a counter, as pytest does, skipping taken ids.
         counts = Counter((method, ids) for method, _, _, _, ids in cases)
+        taken = set(counts)
         seen: Counter = Counter()
         items = []
         for method, index, combo, names, ids in cases:
             if counts[method, ids] > 1:
-                seen[method, ids] += 1
-                ids = f"{ids}_{seen[method, ids] - 1}"
+                base = ids
+                while (method, ids) in taken:
+                    ids = f"{base}_{seen[method, base]}"
+                    seen[method, base] += 1
+                taken.add((method, ids))
             for rnd in range(1, rounds + 1) if rounds > 1 else [None]:
                 parts = [p for p in (ids, f"r{rnd}" if rnd is not None else "") if p]
                 items.append(
@@ -399,7 +403,7 @@ def _start_session(config) -> None:
             torch = None
         if torch is not None and torch.cuda.is_available():
             torch.cuda.init()  # creates the runtime's helper threads, which pinning moves
-            gpu = _gpu_props()
+        gpu = _gpu_props()
     st.gpu = gpu
 
     if pin:
@@ -417,6 +421,8 @@ def _start_session(config) -> None:
     if check != "off":
         if snapshot is None:
             _say(config, "usv: GPU interference check unavailable (no amd-smi / nvidia-smi)")
+        elif not gpu.get("pci"):
+            _say(config, "usv: GPU interference check unavailable (unknown PCI address of the GPU)")
         else:
             foreign = foreign_processes(snapshot, gpu.get("pci"), exclude_pids={os.getpid()})
             if foreign:
@@ -429,13 +435,15 @@ def _start_session(config) -> None:
 
 
 def _run_info(config) -> dict[str, str]:
-    from usv.sysinfo import _gpu_props, run_info
+    from usv.sysinfo import _gpu_props, probe_gpu, run_info
 
     st = config._usv_session
     gpu = st.gpu
     torch = sys.modules.get("torch")
     if not gpu and torch is not None and torch.cuda.is_initialized():
         gpu = _gpu_props()
+    elif not gpu and config.getoption("--benchmark-fresh-process"):
+        gpu = probe_gpu()  # the benchmarks ran in child processes
     extra = {}
     rounds = config.getoption("--benchmark-interleave")
     if rounds > 1:

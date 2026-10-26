@@ -170,7 +170,9 @@ def test_backward_records_bwd_row(pytester):
 
 _FAKE_NEIGHBOR = '''
 import usv.interference as interference
+import usv.sysinfo as sysinfo
 
+sysinfo._gpu_props = lambda index=0: {"pci": "0000:75:00.0"}
 interference.snapshot_gpu_processes = lambda **kw: {}
 interference.foreign_processes = lambda *a, **kw: [{"pid": 4242, "name": "hog", "memory_mb": None}]
 '''
@@ -191,6 +193,16 @@ def test_interference_abort(pytester):
         "--benchmark-no-cpu-pin", "--benchmark-gpu-interference=abort"
     )
     assert result.ret == 3
+
+
+def test_interference_unknown_pci_is_reported(pytester):
+    pytester.makeconftest(_FAKE_NEIGHBOR.replace('"pci": "0000:75:00.0"', '"name": "gpu"'))
+    pytester.makepyfile(_CMP)
+    result = pytester.runpytest_subprocess(
+        "--benchmark-no-cpu-pin", "--benchmark-gpu-interference=abort"
+    )
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(["*interference check unavailable (unknown PCI address*"])
 
 
 def test_cpu_pinning_applied_at_first_benchmark(pytester):

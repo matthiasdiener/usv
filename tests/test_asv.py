@@ -233,6 +233,19 @@ def test_asv_item_ids_are_unique(pytester):
     assert ids == ["time_x[shape0-1_0]", "time_x[shape0-1_1]", "time_x[shape1-1_0]", "time_x[shape1-1_1]"]
 
 
+def test_asv_generated_ids_skip_existing_ones(pytester):
+    pytester.makepyfile(bench_ids='''
+class Ids:
+    params = [1, "1", "1_0"]
+
+    def time_x(self, k):
+        pass
+''')
+    result = pytester.runpytest_subprocess(*_QUIET, "--benchmark-asv", "--collect-only", "-q")
+    ids = [line.split("::")[-1] for line in result.stdout.lines if "::" in line]
+    assert ids == ["time_x[1_1]", "time_x[1_2]", "time_x[1_0]"]
+
+
 def test_fresh_process_propagates_setup_skip(pytester):
     pytester.makepyfile(bench_suite=_SUITE_FILE)
     result = pytester.runpytest_subprocess(
