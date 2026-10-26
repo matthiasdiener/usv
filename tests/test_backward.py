@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from usv import do_bench_backward
 
 
@@ -47,3 +49,9 @@ def test_block_size_falls_to_one_forward(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda=cuda))
     # A 12 GiB forward under the 16 GiB cap: one forward per block, not two.
     assert bench._bwd_block_calls(lambda: None, 16 * 1024**3) == 1
+
+
+@pytest.mark.parametrize("block_calls", [0, -2])
+def test_rejects_non_positive_block_calls(block_calls):
+    with pytest.raises(ValueError, match="block_calls"):
+        do_bench_backward(lambda: None, lambda out: None, block_calls=block_calls, timer="wall")

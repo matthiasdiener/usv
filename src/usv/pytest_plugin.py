@@ -237,12 +237,19 @@ def _matches_any(name: str, patterns) -> bool:
     )
 
 
+def _marks(obj) -> list:
+    """The ``pytestmark`` marks of *obj* (from decorators or a class attribute)."""
+    marks = getattr(obj, "pytestmark", [])
+    return [getattr(m, "mark", m) for m in (marks if isinstance(marks, list) else [marks])]
+
+
 class AsvClass(pytest.Collector):
     """An asv benchmark class; collects one :class:`AsvItem` per method and parameters."""
 
     def __init__(self, *, obj: type, **kwargs) -> None:
         super().__init__(**kwargs)
         self.obj = obj
+        self.own_markers.extend(_marks(obj))
         self._cache_args: tuple | None = None
 
     def collect(self):
@@ -296,6 +303,7 @@ class AsvItem(pytest.Item):
         self.combo_index = combo_index
         self.combo = combo
         self.param_names = param_names
+        self.own_markers.extend(_marks(getattr(self.parent.obj, method)))
         if rnd is not None:
             self._usv_round = rnd
 
@@ -325,7 +333,9 @@ class AsvItem(pytest.Item):
         config._usv_store.add(m, rnd and (_strip_round(self.nodeid, rnd), m.name))
 
     def reportinfo(self):
-        return self.path, None, f"{self.parent.obj.__name__}.{self.name}"
+        code = getattr(getattr(self.parent.obj, self.method), "__code__", None)
+        line = code.co_firstlineno - 1 if code is not None else 0  # 0-based, as pytest expects
+        return self.path, line, f"{self.parent.obj.__name__}.{self.name}"
 
 
 def _is_benchmark(item) -> bool:

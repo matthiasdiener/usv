@@ -246,6 +246,34 @@ class Ids:
     assert ids == ["time_x[1_1]", "time_x[1_2]", "time_x[1_0]"]
 
 
+_MARKS_FILE = '''
+import pytest
+
+
+@pytest.mark.slow
+class Marked:
+    def time_a(self):
+        pass
+
+    @pytest.mark.skip(reason="not now")
+    def time_b(self):
+        pass
+
+
+class Plain:
+    def time_c(self):
+        pass
+'''
+
+
+def test_asv_items_keep_pytest_marks(pytester):
+    pytester.makeini("[pytest]\nmarkers =\n    slow: slow benchmarks\n")
+    pytester.makepyfile(bench_marks=_MARKS_FILE)
+    result = pytester.runpytest_subprocess(*_QUIET, "--benchmark-asv", "-m", "slow", "-rs")
+    result.assert_outcomes(passed=1, skipped=1, deselected=1)
+    result.stdout.fnmatch_lines(["*not now*"])
+
+
 def test_fresh_process_propagates_setup_skip(pytester):
     pytester.makepyfile(bench_suite=_SUITE_FILE)
     result = pytester.runpytest_subprocess(

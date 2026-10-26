@@ -713,10 +713,13 @@ def do_bench_backward(
     whose individual runs show occasional large outliers, and repeating one backward
     with ``retain_graph``, which many modules don't support.
     """
+    if block_calls is not None and block_calls < 1:
+        raise ValueError(f"block_calls must be at least 1, got {block_calls}")
     tm = timer if isinstance(timer, GPUTimer) else get_timer(timer)
     samples: list[float] = []
+    total = 0.0
     with _time_limit(timeout):
-        n = block_calls or _bwd_block_calls(fwd, max_block_bytes)
+        n = block_calls if block_calls is not None else _bwd_block_calls(fwd, max_block_bytes)
         for block in itertools.count():
             outs = [fwd() for _ in range(n)]
             tm.synchronize()
@@ -728,7 +731,8 @@ def do_bench_backward(
             if block < warmup_blocks:
                 continue
             samples.append(tm.value(handle))
-            if len(samples) >= min_blocks and sum(samples) * n >= min_time:
+            total += samples[-1]
+            if len(samples) >= min_blocks and total * n >= min_time:
                 break
     return Measurement(
         samples=np.asarray(samples, dtype=np.float64),
