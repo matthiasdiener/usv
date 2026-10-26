@@ -228,7 +228,8 @@ exposes `median`, `mean`, `std`, `min`, `max`, `n`, `quantile(q)`, and - when
 
 `do_bench_backward(fwd, bwd)` times the backward pass of `fwd`. `bwd` takes one
 result of `fwd`, runs its backward and clears the gradients it produced. Each block
-runs up to 20 forwards untimed (fewer if their saved state would exceed 16 GB),
+runs up to 20 forwards untimed (fewer if their saved state would exceed 16 GB or
+half the free GPU memory),
 then times their backwards back to back as one sample, so the host runs ahead of
 the GPU as in forward timing. The first block is warmup; timing stops after at
 least 15 blocks and 0.2 s.

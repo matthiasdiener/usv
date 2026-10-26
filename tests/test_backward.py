@@ -34,21 +34,35 @@ def test_default_block_size():
     assert m.inner == 20
 
 
-def test_block_size_falls_to_one_forward(monkeypatch):
+def _fake_torch(monkeypatch, graph_bytes, free_bytes):
     import sys
     import types
 
-    import usv.bench as bench
-
-    allocated = iter([0, 12 * 1024**3])
+    allocated = iter([0, graph_bytes, 0])  # before, after the forward, after freeing it
     cuda = types.SimpleNamespace(
         is_available=lambda: True,
         synchronize=lambda: None,
         memory_allocated=lambda: next(allocated),
+        memory_reserved=lambda: graph_bytes,  # the freed forward stays cached
+        mem_get_info=lambda: (free_bytes, 288 * 1024**3),
     )
     monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda=cuda))
+
+
+def test_block_size_falls_to_one_forward(monkeypatch):
+    import usv.bench as bench
+
+    _fake_torch(monkeypatch, 12 * 1024**3, 200 * 1024**3)
     # A 12 GiB forward under the 16 GiB cap: one forward per block, not two.
     assert bench._bwd_block_calls(lambda: None, 16 * 1024**3) == 1
+
+
+def test_block_size_fits_free_memory(monkeypatch):
+    import usv.bench as bench
+
+    _fake_torch(monkeypatch, 1024**3, 7 * 1024**3)
+    # 7 GiB free + 1 GiB cached: half of 8 GiB holds four 1 GiB forwards, not 16.
+    assert bench._bwd_block_calls(lambda: None, 16 * 1024**3) == 4
 
 
 @pytest.mark.parametrize("block_calls", [0, -2])

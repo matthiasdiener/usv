@@ -670,7 +670,8 @@ _BWD_BLOCK_CALLS = 20
 
 
 def _bwd_block_calls(fwd: Callable[[], object], max_block_bytes: int) -> int:
-    """Forwards per block: up to 20, fewer if their saved state would exceed the cap."""
+    """Forwards per block: up to 20, fewer if their saved state would exceed the cap
+    or half the GPU memory still available (the rest is headroom for backward)."""
     torch = sys.modules.get("torch")
     if torch is None or not torch.cuda.is_available():
         fwd()
@@ -680,7 +681,12 @@ def _bwd_block_calls(fwd: Callable[[], object], max_block_bytes: int) -> int:
     out = fwd()
     graph_bytes = torch.cuda.memory_allocated() - before
     del out
-    return max(1, min(_BWD_BLOCK_CALLS, max_block_bytes // max(graph_bytes, 1)))
+    # Blocks torch has cached but not allocated are available too.
+    available = (
+        torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+    )
+    budget = min(max_block_bytes, available // 2)
+    return max(1, min(_BWD_BLOCK_CALLS, budget // max(graph_bytes, 1)))
 
 
 def do_bench_backward(
@@ -705,7 +711,8 @@ def do_bench_backward(
     Each block runs *block_calls* forwards untimed, then times their backwards back to
     back as one sample (per call), so the host runs ahead of the GPU as it does in
     forward timing and nothing is subtracted.  Unless given, *block_calls* is up to 20,
-    fewer if the forwards' saved state would exceed *max_block_bytes*.  The first
+    fewer if the forwards' saved state would exceed *max_block_bytes* or half the GPU
+    memory still available.  The first
     *warmup_blocks* blocks are discarded; timing stops after at least *min_blocks*
     blocks and *min_time* seconds of backward time.  GC is off while timing.
 
