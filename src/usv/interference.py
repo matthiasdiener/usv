@@ -269,13 +269,12 @@ def foreign_processes(
 
 def _torch_bdf(device: int) -> str | None:
     """PCI address of torch's ``cuda:device`` if torch already initialized the GPU."""
-    from usv.sysinfo import _torch_pci
-
     torch = sys.modules.get("torch")
     try:
         if torch is None or not torch.cuda.is_initialized():
             return None
-        return _torch_pci(torch, device)
+        p = torch.cuda.get_device_properties(device)
+        return "%04x:%02x:%02x.0" % (p.pci_domain_id, p.pci_bus_id, p.pci_device_id)
     except Exception:
         return None
 
