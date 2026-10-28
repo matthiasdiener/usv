@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usv"
-version = "2026.1"
+version = "2026.2"
 description = "Unladen Swallow Velocity - a GPU benchmarking tool"
 readme = "README.md"
 license = "MIT"
