@@ -35,13 +35,14 @@ __all__ = [
     "foreign_processes",
 ]
 
-# Monitoring tools open every GPU but aren't compute interference.  Matched after
-# stripping non-alphanumerics, so e.g. "rocm-smi" -> "rocmsmi".
+# Monitoring tools open every GPU but aren't compute interference.  Matched on the executable's
+# basename after stripping non-alphanumerics, so e.g. "/opt/rocm/bin/rocm-smi" -> "rocmsmi".
 _MONITORING_TOOLS = ("nvtop", "amdsmi", "rocmsmi", "nvidiasmi")
 
 
 def _is_monitoring_tool(name: str) -> bool:
-    base = "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+    exe = os.path.basename(str(name or "").strip())
+    base = "".join(ch for ch in exe.lower() if ch.isalnum())
     return bool(base) and base.startswith(_MONITORING_TOOLS)
 
 

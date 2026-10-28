@@ -49,6 +49,8 @@ def test_foreign_processes_filters_tools_and_pids():
             {"pid": 2, "name": "nvtop", "memory_mb": None},
             {"pid": 3, "name": "python3", "memory_mb": None},
             {"pid": 4, "name": "python3", "memory_mb": None},
+            {"pid": 5, "name": "/usr/bin/nvtop", "memory_mb": None},  # SMI tools may report paths
+            {"pid": 6, "name": "/opt/rocm/bin/amd-smi", "memory_mb": None},
         ]
     }
     got = interference.foreign_processes(snap, "75:00.0", exclude_pids={4})
