@@ -18,9 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/ruff-action@v4
+      - uses: astral-sh/ruff-action@v4.1.0  # no floating major tag exists
 
-  test:
+  pytest:
     # No GPU: tests that need one skip; the rest use the wall-clock timer.
     runs-on: ubuntu-latest
     strategy:
@@ -44,4 +44,4 @@ jobs:
           python -m pip install -e .
 
       - name: Test
-        run: python -m pytest -q -rs tests
+        run: python -m pytest -v -rs tests
