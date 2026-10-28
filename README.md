@@ -1,3 +1,7 @@
+[![PyPI version](https://img.shields.io/pypi/v/usv)](https://pypi.org/project/usv/)
+[![License](https://img.shields.io/pypi/l/usv)](https://github.com/matthiasdiener/usv/blob/main/LICENSE)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/usv)](https://pypi.org/project/usv/)
+
 # usv - Unladen Swallow Velocity
 
 GPU micro-benchmarking, in the spirit of
