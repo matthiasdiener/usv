@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
+
+import pytest
 
 # The plugin is installed via its pytest11 entry point, so inner pytester
 # sessions autoload it automatically -- no explicit registration needed.
@@ -206,6 +209,7 @@ def test_interference_unknown_pci_is_reported(pytester):
     result.stdout.fnmatch_lines(["*interference check unavailable (unknown PCI address*"])
 
 
+@pytest.mark.skipif(not hasattr(os, "sched_setaffinity"), reason="needs the CPU affinity API")
 def test_cpu_pinning_applied_at_first_benchmark(pytester):
     pytester.makepyfile(
         _CMP
@@ -222,6 +226,19 @@ def test_zz_affinity():
     # The number of cores depends on the host (2 on GitHub's 4-vCPU runners).
     pinned = re.search(r"usv: main thread pinned to cpus (\d+(?:,\d+)*)", out).group(1)
     assert f"AFFINITY {pinned}" in out
+
+
+def test_cpu_pinning_skipped_without_affinity_api(pytester):
+    pytester.makeconftest(
+        "import os\n"
+        "for name in ('sched_getaffinity', 'sched_setaffinity'):  # as on macOS / Windows\n"
+        "    if hasattr(os, name):\n"
+        "        delattr(os, name)\n"
+    )
+    pytester.makepyfile(_CMP)
+    result = pytester.runpytest_subprocess("--benchmark-gpu-interference=off")
+    result.assert_outcomes(passed=1)
+    result.stdout.fnmatch_lines(["*usv: CPU pinning unavailable on this platform*"])
 
 
 _SAME_NAME = '''

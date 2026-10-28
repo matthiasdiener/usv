@@ -12,6 +12,8 @@ import pytest
 import usv.cpupin as cpupin
 
 PCI = "0000:75:00.0"
+# The CPUs we may run on; empty where there is no affinity API (macOS, Windows).
+_ALLOWED = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else set()
 
 
 @pytest.fixture
@@ -69,7 +71,7 @@ def test_cpu_group_disjoint_per_gpu():
     assert cpupin.cpu_group([0, 1], 4, 0) == [0, 1]  # fewer cores than requested
 
 
-@pytest.mark.skipif(not set(range(8)) <= os.sched_getaffinity(0), reason="needs CPUs 0-7")
+@pytest.mark.skipif(not set(range(8)) <= _ALLOWED, reason="needs CPUs 0-7")
 def test_pin_sets_and_restores(sysfs):
     before = os.sched_getaffinity(0)
     pin = cpupin.pin_cpus(2, pci=PCI, gpu_index=0)
@@ -99,7 +101,7 @@ def test_pin_sets_and_restores(sysfs):
     pin.restore()  # idempotent
 
 
-@pytest.mark.skipif(not {0, 1, 2, 3} <= os.sched_getaffinity(0), reason="needs CPUs 0-3")
+@pytest.mark.skipif(not {0, 1, 2, 3} <= _ALLOWED, reason="needs CPUs 0-3")
 def test_guard_spawn_failure_rolls_back(sysfs, monkeypatch):
     before = os.sched_getaffinity(0)
 
@@ -113,7 +115,7 @@ def test_guard_spawn_failure_rolls_back(sysfs, monkeypatch):
     assert (sysfs / "policy2" / "scaling_governor").read_text() == "schedutil"
 
 
-@pytest.mark.skipif(not {0, 1, 2, 3} <= os.sched_getaffinity(0), reason="needs CPUs 0-3")
+@pytest.mark.skipif(not {0, 1, 2, 3} <= _ALLOWED, reason="needs CPUs 0-3")
 def test_shared_policy_restored_to_original(sysfs):
     pin = cpupin.pin_cpus(4, pci=PCI, gpu_index=0)  # cpus 0-3; 0 and 1 share policy01
     try:
@@ -161,6 +163,7 @@ def test_governor_guard_exits_while_pipe_is_shared(tmp_path):
     assert gov.read_text() == "schedutil"
 
 
+@pytest.mark.skipif(not _ALLOWED, reason="needs the CPU affinity API")
 def test_pinned_cpus_without_governor(sysfs):
     with cpupin.pinned_cpus(1, pci=PCI, governor=False, move_helpers=False) as pin:
         assert os.sched_getaffinity(0) == set(pin.cpus)

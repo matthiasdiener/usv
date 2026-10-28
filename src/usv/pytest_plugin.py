@@ -399,6 +399,9 @@ def _start_session(config) -> None:
     fresh = config.getoption("--benchmark-fresh-process")
     check = config.getoption("--benchmark-gpu-interference")
     pin = not config.getoption("--benchmark-no-cpu-pin")
+    if pin and not hasattr(os, "sched_setaffinity"):
+        _say(config, "usv: CPU pinning unavailable on this platform")
+        pin = False
     torch = sys.modules.get("torch")
     initialized = torch is not None and torch.cuda.is_initialized()
     # Before this process touches the GPU, the SMI tools list genuine neighbors only.

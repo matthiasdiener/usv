@@ -22,11 +22,16 @@ jobs:
 
   pytest:
     # No GPU: tests that need one skip; the rest use the wall-clock timer.
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          # No CPU pinning there either: checks usv keeps working off Linux.
+          - os: macos-latest
+            python-version: "3.15"
     steps:
       - uses: actions/checkout@v5
 

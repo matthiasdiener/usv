@@ -36,3 +36,7 @@ jax = ["jax>=0.4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff.lint]
+# Pinned, so a new ruff release (with a wider default rule set) doesn't change what CI checks.
+select = ["E4", "E7", "E9", "F"]
