@@ -568,7 +568,10 @@ def _format_comparison(cmps: list[_Cmp]) -> str:
         for c in cmps
     ]
     widths = [max(len(r[i]) for r in (header, *rows)) for i in range(len(header))]
-    fmt = lambda r: "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(r))
+
+    def fmt(r):
+        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(r))
+
     sep = "-" * (sum(widths) + 2 * (len(widths) - 1))
     return "\n".join([fmt(header), sep, *(fmt(r) for r in rows)])
 

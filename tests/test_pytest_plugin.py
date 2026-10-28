@@ -137,9 +137,10 @@ def test_interleave_rounds_pool_samples(pytester):
     pytester.makepyfile(_ROUNDS)
     result = _run(pytester, "--benchmark-interleave=2", "--benchmark-save=il", "-v")
     result.assert_outcomes(passed=7)  # 3 benchmarks x 2 rounds + 1 plain test
-    lines = [l for l in result.stdout.lines if "PASSED" in l]
+    lines = [line for line in result.stdout.lines if "PASSED" in line]
     assert "test_plain" in lines[0]  # non-benchmarks first, then round 1, round 2
-    assert all("-r1]" in l for l in lines[1:4]) and all("-r2]" in l for l in lines[4:7])
+    assert all("-r1]" in line for line in lines[1:4])
+    assert all("-r2]" in line for line in lines[4:7])
     (csv,) = pytester.path.glob("results/*-il.csv")
     rows = {r.split(",")[0]: r.split(",")[1] for r in csv.read_text().splitlines()[1:]}
     # One row per benchmark, pooling ceil(5/2) = 3 samples from each of 2 rounds.
