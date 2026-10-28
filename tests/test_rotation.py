@@ -32,7 +32,9 @@ def test_nbytes_numpy():
 
 def test_rotating_buffers_sizes_and_cycles():
     counter = itertools.count()
-    make = lambda: np.full(4, next(counter), dtype=np.float64)  # 32 B each
+
+    def make():
+        return np.full(4, next(counter), dtype=np.float64)  # 32 B each
 
     nxt = rotating_buffers(make, l2_bytes=100, l2_mult=2.0)  # -> 7 buffers
     values = [nxt()[0] for _ in range(7)]
@@ -41,7 +43,9 @@ def test_rotating_buffers_sizes_and_cycles():
 
 
 def test_rotating_buffers_explicit_count():
-    make = lambda: np.zeros(1, dtype=np.float32)
+    def make():
+        return np.zeros(1, dtype=np.float32)
+
     nxt = rotating_buffers(make, count=3)
     ids = {id(nxt()) for _ in range(3)}
     assert len(ids) == 3
